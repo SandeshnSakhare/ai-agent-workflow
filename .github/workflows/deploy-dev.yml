@@ -1,0 +1,66 @@
+name: Deploy to dev
+
+# Pipeline stage 7: deploy to the dev environment.
+# Placeholder deploy: validates the package and uploads the site as an
+# artifact. Replace the deploy step with your real commands later
+# (rsync, docker build/push, gh-pages, etc.) — the trigger stays the same.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy-dev:
+    name: Deploy to dev
+    runs-on: ubuntu-latest
+    environment: dev-deploy
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate (npm test on main)
+        run: npm test
+
+      - name: Package site
+        run: |
+          mkdir -p dist
+          cp -v public/* dist/
+
+      - name: "Deploy (placeholder — replace with real deploy)"
+        run: |
+          echo "🚀 Deploying commit ${{ github.sha }} to dev environment..."
+          echo "Add your real deploy commands here: rsync, docker push, gh-pages, etc."
+
+      - name: Upload artifact (deploy bundle)
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-dist-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+
+      - name: Report result on the merged PR
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PRS=$(gh pr list --repo "${{ github.repository }}" --state merged \
+            --base main --search "${{ github.sha }}" --json number --jq '.[].number' || true)
+          if [ -n "${PRS}" ]; then
+            for PR in ${PRS}; do
+              gh pr comment "${PR}" --repo "${{ github.repository }}" \
+                --body "🚀 Deployed to **dev** (commit ${{ github.sha }})."
+            done
+          fi

@@ -1,0 +1,33 @@
+name: Copilot setup steps
+
+# Development-environment config for the Copilot coding agent (developer and
+# unit-test agent) and Copilot code review (review agent).
+# Docs: https://docs.github.com/en/copilot/customizing-copilot/configuring-and-extending-copilot-coding-agent
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - '.github/workflows/copilot-setup-steps.yml'
+
+jobs:
+  copilot-setup-steps:
+    # Required job name for Copilot to pick this up.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies (none currently)
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund || echo "No dependencies to install"
+
+      - name: Verify test suite runs
+        run: node --test

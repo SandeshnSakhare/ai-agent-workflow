@@ -1,0 +1,185 @@
+name: PR Quality Gate
+
+# Pipeline stages 4-6, driven by the pull request that the developer agent
+# (Copilot coding agent) opens when it finishes an issue:
+#
+#   4. Unit-test agent  -> on the draft "opened" event only, a PR comment
+#      "@copilot add unit tests ..." makes the same Copilot session extend
+#      its PR with tests. Rejected approval => no comment => PR stays draft.
+#   5. CI gate          -> on every later push (synchronize/ready_for_review):
+#      the real unit-test suite must pass AND tests/ must actually change
+#      before the pipeline may continue. This prevents merging an
+#      implementation-only PR before the test agent has contributed.
+#   6. Review agent     -> Copilot code review requested via REST API; once
+#      it submits and checks are green, the PR is marked ready and
+#      auto-merged (squash) into main; deploy-dev.yml then deploys to dev.
+#
+# Nothing external: everything runs inside GitHub Actions with the built-in
+# GITHUB_TOKEN, plus Copilot features already included in your plan.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  unit-test-agent:
+    name: "Agent: unit tests (@copilot)"
+    # Only on the initial draft open. Later pushes (the test agent's own) are
+    # handled by the ci-gate below, so there is no loop.
+    if: github.event.action == 'opened' && github.event.pull_request.draft == true
+    runs-on: ubuntu-latest
+    # One-time setup: Settings → Environments → "unittest-approval" →
+    # "Required reviewers" → add yourself. GitHub will notify you, the job
+    # pauses until you approve, then the @copilot comment is posted.
+    environment: unittest-approval
+    steps:
+      - name: Instruct the unit-test agent to extend the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "${PR}" \
+            --repo "${{ github.repository }}" \
+            --body "@copilot Great work on the implementation. Before this PR can be reviewed, extend this same pull request with unit tests: add/extend tests under tests/ for every behavior you added or changed in scripts/, keep them deterministic, cover edge cases and error paths, run npm test to confirm everything passes locally, and commit the tests to this PR. Do not modify application behavior while adding tests."
+
+      - name: Acknowledge on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "${PR}" \
+            --repo "${{ github.repository }}" \
+            --body "🧪 **Unit-test agent** engaged — waiting for it to push tests to this PR."
+
+  ci-gate:
+    name: "CI: tests pass + tests were added"
+    # Runs for every push after the draft opened (synchronize) and for PRs
+    # opened ready. Deliberately not on 'opened' drafts — the test agent has
+    # not pushed yet, so there is nothing to gate on except noise.
+    if: github.event.action != 'opened'
+    runs-on: ubuntu-latest
+    outputs:
+      passed: ${{ steps.wait.outputs.passed }}
+    steps:
+      - id: wait
+        name: Wait for the required 'tests' check on the PR head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(gh api "repos/${REPO}/pulls/${PR}" --jq '.head.sha')"
+          echo "Waiting for 'tests' check on ${HEAD_SHA}"
+          for i in $(seq 1 60); do
+            CONCLUSION="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" \
+              --jq '.check_runs[] | select(.name == "tests") | .conclusion' | head -n1)"
+            if [ "${CONCLUSION}" = "success" ]; then
+              echo "Unit tests passed."
+              echo "passed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "${CONCLUSION}" = "failure" ]; then
+              echo "::error::Unit tests failed on the PR head."
+              exit 1
+            fi
+            echo "Check not concluded yet (attempt ${i}/60); sleeping 20s..."
+            sleep 20
+          done
+          echo "::error::Timed out waiting for the 'tests' check to conclude."
+          exit 1
+
+      - name: Require that the PR actually changes tests/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          TESTS_CHANGED="$(gh api "repos/${REPO}/pulls/${PR}/files?per_page=100" --paginate \
+            --jq '[.[].filename] | any(startswith("tests/"))')"
+          if [ "${TESTS_CHANGED}" != "true" ]; then
+            echo "::error::This PR does not modify tests/ — the unit-test agent's contribution is required before the pipeline can continue."
+            exit 1
+          fi
+          echo "Unit tests present in the PR diff."
+
+  review-agent:
+    name: "Agent: reviewer (Copilot code review)"
+    needs: ci-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request Copilot code review via REST API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${REPO}/pulls/${PR}/requested_reviewers" \
+            -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
+
+      - name: Wait for the Copilot review to be submitted
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            REVIEW_STATE="$(gh api "repos/${REPO}/pulls/${PR}/reviews" \
+              --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or .user.login == "copilot-pull-request-reviewer")] | sort_by(.submitted_at) | last | .state // empty' | head -n1)"
+            if [ -n "${REVIEW_STATE}" ]; then
+              echo "Copilot review submitted: ${REVIEW_STATE}"
+              exit 0
+            fi
+            echo "Copilot review not submitted yet (attempt ${i}/30); sleeping 20s..."
+            sleep 20
+          done
+          echo "::error::Timed out waiting for the Copilot code review."
+          exit 1
+
+  auto-merge:
+    name: Merge when green
+    needs: review-agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark PR ready for review (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr ready "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            || echo "PR already ready for review."
+
+      - name: Enable auto-merge (squash) — waits for branch protection
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --squash --auto \
+            || echo "Auto-merge already enabled (waiting for branch protection)."
+
+      - name: Note on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "${PR}" \
+            --repo "${{ github.repository }}" \
+            --body "🧪 Tests passed and 🔍 Copilot review submitted — PR marked ready and auto-merge (squash) enabled. It will merge as soon as branch protection allows; then deploy-dev.yml runs."

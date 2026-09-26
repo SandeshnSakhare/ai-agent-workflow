@@ -1,0 +1,12 @@
+{
+  "name": "multi-agent-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo app driving the GitHub-native multi-agent pipeline",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

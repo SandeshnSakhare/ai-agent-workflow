@@ -1,0 +1,38 @@
+name: Agent task
+description: Create a task for the multi-agent pipeline (developer agent -> tests -> review -> deploy)
+labels: [agent-task]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Opening this issue starts the automated pipeline: an approval gate
+        (you will get a GitHub review-pending notification), then the
+        developer agent implements the task and opens a draft PR, the
+        unit-test agent adds tests, the review agent reviews, and the PR
+        auto-merges to main and deploys to dev.
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What should be implemented or changed?
+      placeholder: Add a square-root button to the calculator and expose sqrt() in scripts/app.js
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know it is done? List concrete, checkable criteria.
+      placeholder: |
+        - sqrt() exists in scripts/app.js and handles negative input with an error
+        - The calculator UI offers a √ operation
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: Keep changes minimal and production-quality
+        - label: Unit tests must cover the new behavior
+        - label: No new npm dependencies
