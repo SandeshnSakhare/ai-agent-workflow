@@ -61,7 +61,9 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # used by litellm + probes
       GH_MODEL: ${{ inputs.model }}
       OR_MODEL: deepseek/deepseek-chat-v5:free
-      GEMINI_MODEL: gemini-2.0-flash
+      # gemini-2.0-flash was retired by Google (404 "no longer available");
+      # verified live: gemini-3.8-flash is the current flash model.
+      GEMINI_MODEL: gemini-3.8-flash
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
