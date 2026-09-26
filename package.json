@@ -4,6 +4,7 @@
   "private": true,
   "description": "Demo app driving the GitHub-native multi-agent pipeline",
   "scripts": {
+    "start": "node scripts/serve.js",
     "test": "node --test"
   },
   "engines": {
