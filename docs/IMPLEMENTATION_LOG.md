@@ -254,6 +254,36 @@ even when the rejection is correct.
 
 ---
 
+## Issue 8 — `GitHub Actions is not permitted to create or approve pull requests`
+
+**Where:** repo run, agent-runtime (implement), step `Open draft pull request`
+
+**What we saw** — the agent itself worked end-to-end (aider installed,
+implemented the issue, pushed `agent/implement-issue-5`), but the final
+step failed:
+```
+pull request create failed: GraphQL: GitHub Actions is not permitted to
+create or approve pull requests (createPullRequest)
+```
+
+**Root cause** — a repository setting, **off by default**: Settings →
+Actions → General → Workflow permissions → "Allow GitHub Actions to create
+and approve pull requests". GitHub disables it to prevent CI from
+self-approving PRs; any bot that creates PRs via the built-in `GITHUB_TOKEN`
+hits this GraphQL error.
+
+**Fix** — enable the checkbox (Settings → Actions → General → Workflow
+permissions). The runtime was also hardened for the resulting re-run case:
+the implement job now force-pushes its branch, so a second attempt after a
+partial failure replaces the stale branch instead of diverging.
+
+**Lesson** — token *permissions* have two layers: what the workflow
+`permissions:` block requests, and what the repo settings allow the Actions
+token to do at all. The second layer is invisible until the first API call
+that crosses it.
+
+---
+
 ## Timeline summary
 
 | # | Symptom | Class of bug | Permanent fix |
@@ -265,6 +295,7 @@ even when the rejection is correct.
 | 5 | `401` on agent assignment | missing secret | repo secret + pre-flight `::error::` |
 | 6 | Approval gate never paused | platform plan limitation | comment-command gates (v2); env gates opt-in |
 | 7 | Command run "Skipped", no feedback | silent rejection | `guidance` hint job |
+| 8 | Actions can't create the PR (GraphQL error) | repo settings layer | enable "Allow GitHub Actions to create and approve pull requests"; force-push for re-run safety |
 
 ---
 
