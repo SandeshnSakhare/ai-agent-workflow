@@ -1,0 +1,190 @@
+name: Agent Runtime
+
+# Reusable coding-agent runtime: aider (open-source CLI agent) + GitHub Models
+# (free inference using the built-in GITHUB_TOKEN — no PAT, no paid Copilot).
+#
+# Modes:
+#   implement — reads an issue, edits code on a new branch, opens a DRAFT PR
+#   test      — checks out the PR head, adds unit tests, pushes to the PR
+#   review    — posts an LLM code review on the PR
+#
+# Free-tier rate limits (GitHub Models, free plan): ~15 req/min, ~150 req/day.
+# One implement/test run ≈ 10–30 requests — a few runs per day. Fine for a
+# demo pipeline; point OPENAI_API_BASE/OPENAI_API_KEY at any paid provider
+# for real workloads.
+#
+# Aider talks to GitHub Models through its OpenAI-compatible client:
+#   OPENAI_API_BASE = https://models.github.ai/inference
+#   OPENAI_API_KEY  = $GITHUB_TOKEN (requires the `models: read` permission)
+# Review mode uses the official actions/ai-inference action.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "implement | test | review"
+        required: true
+        type: string
+      issue_number:
+        description: "Issue number (implement mode)"
+        required: false
+        type: string
+      pr_number:
+        description: "Pull request number (test/review modes)"
+        required: false
+        type: string
+      model:
+        description: "GitHub Models model id (vendor/model)"
+        required: false
+        type: string
+        default: "openai/gpt-4.1-mini"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  models: read
+
+jobs:
+  agent:
+    name: "Agent: ${{ inputs.mode }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OPENAI_API_BASE: https://models.github.ai/inference
+      OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MODEL_ID: ${{ inputs.model }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "ai-agent-workflow[bot]"
+          git config user.email "agent@users.noreply.github.com"
+
+      # ------------------------------------------------------------------
+      # implement
+      # ------------------------------------------------------------------
+      - name: Read the issue
+        if: inputs.mode == 'implement'
+        id: issue
+        run: |
+          gh issue view "${{ inputs.issue_number }}" \
+            --repo "${{ github.repository }}" \
+            --json title,body \
+            --jq '"title=" + .title' >> "$GITHUB_OUTPUT"
+          gh issue view "${{ inputs.issue_number }}" \
+            --repo "${{ github.repository }}" \
+            --json body \
+            --jq '.body' > /tmp/issue-body.md
+
+      - name: Implement the issue with aider
+        if: inputs.mode == 'implement'
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet aider-chat
+
+          BRANCH="agent/implement-issue-${{ inputs.issue_number }}"
+          git checkout -b "${BRANCH}"
+
+          aider \
+            --model "${MODEL_ID}" \
+            --message "Implement this GitHub issue.
+          Title: ${{ steps.issue.outputs.title }}
+          Body: $(cat /tmp/issue-body.md)
+
+          Rules: keep changes minimal and production-quality; unit tests in
+          tests/ must keep passing (npm test); do not add dependencies." \
+            --yes-always \
+            --no-auto-commits \
+            --no-check-update
+
+          git add -A
+          git commit -m "feat: implement issue #${{ inputs.issue_number }} (developer agent)" \
+            || { echo "::error::Agent produced no changes."; exit 1; }
+          git push origin "${BRANCH}"
+
+      - name: Open draft pull request
+        if: inputs.mode == 'implement'
+        run: |
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base main \
+            --head "agent/implement-issue-${{ inputs.issue_number }}" \
+            --draft \
+            --title "feat: implement issue #${{ inputs.issue_number }} (developer agent)" \
+            --body "Implements #${{ inputs.issue_number }}
+
+          Produced by the **developer agent** (aider + GitHub Models free tier).
+
+          **Next step:** a maintainer comments \`/approve-tests\` on this PR to
+          engage the unit-test agent. Then CI + review + auto-merge run
+          automatically."
+
+      # ------------------------------------------------------------------
+      # test
+      # ------------------------------------------------------------------
+      - name: Check out the PR head and add tests with aider
+        if: inputs.mode == 'test'
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet aider-chat
+
+          BRANCH="$(gh pr view "${{ inputs.pr_number }}" --repo "${{ github.repository }}" --json headRefName --jq .headRefName)"
+          git checkout "${BRANCH}"
+
+          aider \
+            --model "${MODEL_ID}" \
+            --message "Add or extend unit tests under tests/ for every behavior changed
+          in this PR (git diff origin/main...HEAD). Use node:test and
+          node:assert/strict; keep tests deterministic; cover edge cases and
+          error paths; run npm test to confirm everything passes. Do NOT change
+          application behavior." \
+            --yes-always \
+            --no-auto-commits \
+            --no-check-update
+
+          git add -A
+          git commit -m "test: add unit tests for PR #${{ inputs.pr_number }} (unit-test agent)" \
+            || { echo "::error::Agent produced no test changes — the diff guard would reject this anyway."; exit 1; }
+          git push origin "${BRANCH}"
+
+      # ------------------------------------------------------------------
+      # review
+      # ------------------------------------------------------------------
+      - name: Fetch PR diff
+        if: inputs.mode == 'review'
+        run: |
+          gh pr diff "${{ inputs.pr_number }}" --repo "${{ github.repository }}" > /tmp/pr.diff
+          head -c 60000 /tmp/pr.diff > /tmp/pr.trunc.diff
+
+      - name: Generate the review (GitHub Models)
+        if: inputs.mode == 'review'
+        id: inference
+        uses: actions/ai-inference@v1
+        with:
+          model: ${{ inputs.model }}
+          system-prompt: >-
+            You are a rigorous code reviewer. Review the diff for correctness,
+            security, missing tests, and error handling. Be concise. Format:
+            one-paragraph summary, then bullet findings with severity
+            (High/Medium/Low). If it looks good, say so explicitly.
+          prompt-file: /tmp/pr.trunc.diff
+
+      - name: Post the review on the PR
+        if: inputs.mode == 'review'
+        run: |
+          REVIEW="${{ steps.inference.outputs.response }}"
+          [ -n "${REVIEW}" ] || REVIEW="Review unavailable (model call failed or rate-limited) — check the Actions logs."
+
+          gh pr review "${{ inputs.pr_number }}" \
+            --repo "${{ github.repository }}" \
+            --comment \
+            --body "🔍 **Review agent** (aider/GitHub Models free tier):
+
+          ${REVIEW}"

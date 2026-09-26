@@ -37,11 +37,22 @@ review, merge, and deploy.
 | `scripts/app.js`, `public/` | The demo app the agents work on |
 | `tests/` | `node:test` unit tests (`npm test`) |
 | `scripts/setup-github.sh` | One-time repo bootstrap (labels, environments, protection) |
+| `docs/PIPELINE_FLOW.md` | The complete end-to-end pipeline flow (stages, events, failure modes) |
+| `docs/CONCEPTS.md` | Every concept used, from Git basics to self-healing/idempotency patterns |
+| `docs/IMPLEMENTATION_LOG.md` | Chronological log of issues hit while building and how each was resolved |
 
 ## One-time setup
 
-Prerequisites: a **paid Copilot plan**, repo admin rights, `gh` CLI logged in
-as a Copilot-licensed user.
+Prerequisites: **none beyond a GitHub account.** The agents run inside your
+Actions runners using [aider](https://aider.chat) (open-source CLI agent) +
+[GitHub Models](https://docs.github.com/en/github-models) free inference
+(`GITHUB_TOKEN` + `models: read` — no PAT, no paid Copilot, no external
+service).
+
+> Free-tier reality check: ~150 model requests/day on the free plan; one
+> agent run ≈ 10–30 requests → a few issue-runs per day. To scale up, point
+> `OPENAI_API_BASE` / `OPENAI_API_KEY` in `agent-runtime.yml` at any
+> OpenAI-compatible provider (OpenRouter, Gemini, OpenAI, Anthropic).
 
 ```bash
 ./scripts/setup-github.sh                    # or: ./scripts/setup-github.sh owner/repo
@@ -81,8 +92,10 @@ Then finish in the Settings UI:
 
 ## Swapping in a different coding agent
 
-The developer/unit-test stages only talk to GitHub (issue assignment +
-`@copilot` comments). To use Claude Code or Codex instead, replace the
-assignment step in `orchestrator.yml` with that agent's CLI in the workflow
-(e.g. `anthropics/claude-code-action`) — the gate, review, merge, and deploy
-stages stay identical.
+The agent runtime is isolated in `.github/workflows/agent-runtime.yml`
+(modes: `implement` / `test` / `review`). It defaults to aider + GitHub
+Models. To use another agent, edit only that file — e.g. set
+`OPENAI_API_BASE`/`OPENAI_API_KEY` to OpenRouter/Anthropic/OpenAI, or
+replace the aider invocations with Claude Code / Codex CLI. The gates
+(`/approve`, `/approve-tests`), CI, diff guard, merge, and deploy stages
+stay identical.

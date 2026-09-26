@@ -1,93 +1,125 @@
-# Pipeline Flow — GitHub-Native Multi-Agent Workflow
+# Pipeline Flow — GitHub-Native Multi-Agent Workflow (v2, comment gates)
 
 This document describes the **complete end-to-end flow** of the pipeline:
-every stage, every trigger, every API call, and what happens when things
-fail. For the underlying concepts (labels, environments, self-healing,
-gates, etc.), see [`CONCEPTS.md`](./CONCEPTS.md).
+every stage, every trigger, every command, and what happens when things
+fail. For the underlying concepts, see [`CONCEPTS.md`](./CONCEPTS.md); for
+the issues we hit while building it, see
+[`IMPLEMENTATION_LOG.md`](./IMPLEMENTATION_LOG.md).
+
+> **v2 note:** approval gates were redesigned from environment
+> required-reviewers to comment commands (`/approve`, `/approve-tests`,
+> `/deny`) because GitHub only enforces environment reviewers on **public**
+> repos for Free/Pro/Team plans, and repo admins bypass them by default.
+> See `IMPLEMENTATION_LOG.md` issue #8.
 
 ---
 
 ## 1. The big picture
 
 ```
-                ┌──────────────────────────────────────────────────────┐
-                │                     YOU (human)                      │
-                │   opens an issue        approves 2 gates (notified   │
-                │   (Agent task template) by GitHub automatically)      │
-                └────────┬─────────────────────────┬───────────────────┘
-                         │                         │
-                         ▼                         │
-   ┌────────────────────────────────┐              │
-   │ STAGE 1 — TRIAGE               │ orchestrator.yml            │
-   │ trigger: issues.opened/reopened│                             │
-   │  • validate (title/body)       │                             │
-   │  • self-heal: create label     │                             │
-   │    `agent-task` if missing     │                             │
-   │  • label the issue             │                             │
-   │  • post pipeline-plan comment  │                             │
-   └────────┬───────────────────────┘                             │
-            ▼                                                     │
-   ┌────────────────────────────────┐                             │
-   │ STAGE 2 — APPROVAL GATE        │  ◀── YOU comment /approve   │
-   │ pipeline parks after triage;   │      on the issue (works on │
-   │ nothing runs until a           │      every plan; private    │
-   │ maintainer posts /approve      │      repos included)        │
-   └────────┬───────────────────────┘                             │
-            ▼ (approved)                                          │
-   ┌────────────────────────────────┐                             │
-   │ STAGE 3 — DEVELOPER AGENT      │ orchestrator.yml            │
-   │ REST: assign copilot-swe-agent │                             │
-   │ [bot] to the issue with custom │                             │
-   │ instructions                   │                             │
-   │ 👨‍💻 Copilot coding agent works │                             │
-   │    on GitHub's cloud infra and │                             │
-   │    opens a DRAFT PR (Closes #N)│                             │
-   └────────┬───────────────────────┘                             │
-            ▼ (draft PR opened → trigger: pull_request.opened)    │
-   ┌────────────────────────────────┐                             │
-   │ STAGE 4 — UNIT-TEST AGENT      │                             │
-   │ YOU comment /approve-tests     │                             │
-   │ on the PR ⏸ (2nd gate) ────────┼─────────────────────────────┘
-   │ on approval: posts "@copilot   │
-   │ add unit tests..." comment     │
-   │ 🧪 the same Copilot session    │
-   │    pushes tests to the same PR │
-   └────────┬───────────────────────┘
-            ▼ (test agent pushes → trigger: pull_request.synchronize)
-   ┌────────────────────────────────┐
-   │ STAGE 5 — CI GATE              │ pr-quality-gate.yml + ci.yml
-   │  • wait for check-run "tests"  │
-   │    (created by ci.yml)         │
-   │  • fail unless the PR diff     │
-   │    actually touches tests/     │
-   └────────┬───────────────────────┘
-            ▼
-   ┌────────────────────────────────┐
-   │ STAGE 6 — REVIEW AGENT         │ pr-quality-gate.yml
-   │ REST: request                  │
-   │ copilot-pull-request-reviewer  │
-   │ [bot] as reviewer              │
-   │ 🔍 poll until the review lands │
-   └────────┬───────────────────────┘
-            ▼
-   ┌────────────────────────────────┐
-   │ STAGE 7 — AUTO-MERGE           │ pr-quality-gate.yml
-   │ mark PR ready → gh pr merge    │
-   │ --squash --auto (falls back to │
-   │ direct merge if no protection) │
-   └────────┬───────────────────────┘
-            ▼ (push to main)
-   ┌────────────────────────────────┐
-   │ STAGE 8 — DEPLOY TO DEV        │ deploy-dev.yml
-   │ npm test → package public/ →   │
-   │ placeholder deploy → artifact  │
-   │ upload → comment on merged PR  │
-   └────────────────────────────────┘
+        ┌───────────────────────────────────────────────────────────┐
+        │                        YOU (human)                        │
+        │  1. opens an issue (Agent task template)                  │
+        │  3. comments /approve on the issue                        │
+        │  6. comments /approve-tests on the draft PR               │
+        └───────┬───────────────────────┬───────────────────────────┘
+                │                       │
+                ▼                       │
+┌───────────────────────────────────┐   │
+│ STAGE 1 — TRIAGE                  │   orchestrator.yml
+│ trigger: issues.opened/reopened   │
+│  • validate title/body            │
+│  • self-heal: create `agent-task` │
+│    label if missing               │
+│  • label the issue                │
+│  • post pipeline-plan comment     │
+│    ending with "comment /approve" │
+└────────┬──────────────────────────┘
+         ▼
+┌───────────────────────────────────┐
+│ STAGE 2 — APPROVAL GATE           │   ← the pipeline PARKS here.
+│ (no job runs; no timer)           │
+│ the issue thread IS the queue:    │
+│ a maintainer comments /approve    │
+└────────┬──────────────────────────┘
+         ▼ (issue_comment.created: "/approve")
+┌───────────────────────────────────┐
+│ STAGE 3 — DEVELOPER AGENT         │   approval-handler.yml →
+│  • authorize: comment author must │   agent-runtime.yml (implement)
+│    be OWNER / MEMBER / COLLABOR.  │
+│  • aider + GitHub Models (free,   │
+│    GITHUB_TOKEN, models: read)    │
+│    runs INSIDE the Actions runner │
+│  👨‍💻 edits code on a branch,      │
+│     opens a DRAFT PR ("Closes #N")│
+└────────┬──────────────────────────┘
+         ▼ (pull_request.opened, draft)
+┌───────────────────────────────────┐
+│ STAGE 4 — UNIT-TEST AGENT GATE    │   ← 2nd human gate
+│ a maintainer comments             │
+│ /approve-tests ON THE PR          │
+│ → agent-runtime.yml (test mode):  │
+│ 🧪 aider adds tests under tests/, │
+│    commits & pushes to the PR     │
+└────────┬──────────────────────────┘
+         ▼ (pull_request.synchronize / ready_for_review / reopened)
+┌───────────────────────────────────┐
+│ STAGE 5 — CI GATE                 │   pr-quality-gate.yml + ci.yml
+│  • wait for check-run "tests"     │
+│    (produced by ci.yml)           │
+│  • diff guard: PR must actually   │
+│    modify tests/                  │
+└────────┬──────────────────────────┘
+         ▼
+┌───────────────────────────────────┐
+│ STAGE 6 — REVIEW AGENT            │   pr-quality-gate.yml →
+│  agent-runtime.yml (review mode): │
+│  • LLM reviews the PR diff        │
+│  • posts a comment review with    │
+│    severity-tagged findings       │
+└────────┬──────────────────────────┘
+         ▼
+┌───────────────────────────────────┐
+│ STAGE 7 — AUTO-MERGE              │   pr-quality-gate.yml
+│  • mark PR ready (idempotent)     │
+│  • gh pr merge --squash --auto    │
+│    → fallback: direct squash      │
+│    → fallback: "already merged"   │
+└────────┬──────────────────────────┘
+         ▼ (push to main)
+┌───────────────────────────────────┐
+│ STAGE 8 — DEPLOY TO DEV           │   deploy-dev.yml
+│  npm test → package public/ →     │
+│  placeholder deploy → artifact →  │
+│  comment "🚀 Deployed" on the PR  │
+└───────────────────────────────────┘
 ```
 
 ---
 
-## 2. Stage-by-stage reference
+## 2. The command set (the human interface)
+
+| Command | Posted on | Effect | Who |
+|---|---|---|---|
+| `/approve` | the **issue** | assigns the developer agent (stage 3) | OWNER / MEMBER / COLLABORATOR |
+| `/approve-tests` | the **PR** | engages the unit-test agent (stage 4) | OWNER / MEMBER / COLLABORATOR |
+| `/deny` | issue or PR | records pipeline cancellation | OWNER / MEMBER / COLLABORATOR |
+| *(close the issue)* | — | also cancels the run | — |
+
+Notes:
+- Authorization comes from `github.event.comment.author_association` — a
+  drive-by user commenting on a public repo **cannot** trigger agents.
+- Posting a command in the wrong place does not fail anything: a
+  `guidance` job replies with a hint (e.g. "`/approve-tests` is a PR
+  command — post it on the PR the developer agent creates").
+- The `unit-test-agent` job in `pr-quality-gate.yml` still exists as an
+  **opt-in native environment gate** (repo variable `ENABLE_ENV_GATES=1`
+  + required reviewers on `unittest-approval`). Use it only if your repo
+  is public or you're on Business/Enterprise.
+
+---
+
+## 3. Stage-by-stage reference
 
 ### Stage 1 — Triage (`.github/workflows/orchestrator.yml` → job `triage`)
 
@@ -97,177 +129,152 @@ gates, etc.), see [`CONCEPTS.md`](./CONCEPTS.md).
 | **Permissions** | `issues: write`, `contents: read` |
 | **Auth** | built-in `GITHUB_TOKEN` |
 
-Steps in order:
-
-1. **Validate** — closes the issue if the title is blank; warns if the body
-   is shorter than 20 chars. Outputs `valid=true/false`.
+1. **Validate** — closes title-less issues; warns on bodies < 20 chars.
+   Outputs `valid=true/false`; downstream jobs condition on it.
 2. **Self-heal label** — `gh label create agent-task ... || echo "already exists"`.
-   Guarantees the label exists before it is used (this was the first real
-   production failure of the pipeline).
-3. **Label** — applies `agent-task` to the issue.
-4. **Acknowledge** — posts the numbered pipeline-plan comment so anyone
-   reading the issue knows exactly what will happen.
+3. **Label** the issue `agent-task`.
+4. **Post the plan comment** — the numbered pipeline plan + command list.
+   This comment ends the run; the pipeline is now parked.
 
-Failure behavior: if validation fails, `approval-gate` is skipped via
-`needs.triage.outputs.valid == 'true'` — the pipeline halts *before* the
-gate instead of requesting approval for a dead run.
-
-### Stage 2 — Approval gate (comment command via `approval-handler.yml`)
+### Stage 2 — Approval gate (comment-based, via `approval-handler.yml`)
 
 | | |
 |---|---|
-| **Mechanism** | maintainer posts `/approve` on the issue |
-| **Authorization** | `author_association` must be OWNER / MEMBER / COLLABORATOR |
-| **Trigger** | `issue_comment.created` → `approval-handler.yml` |
-| **Cancel** | `/deny` comment, or close the issue |
+| **Mechanism** | maintainer comments `/approve` on the issue |
+| **Authorization** | `author_association ∈ {OWNER, MEMBER, COLLABORATOR}` |
+| **Trigger** | `issue_comment.created` |
+| **Cancel** | `/deny` or close the issue |
 
-Why not environment required-reviewers? Two documented GitHub behaviors
-bypass them on personal repos: (1) on Free/Pro/Team plans required reviewers
-are only enforced on **public** repositories; (2) repo **admins bypass**
-environment protection rules by default. The comment gate works on every
-plan, keeps the audit trail in the issue thread, and is event-driven (no
-polling). Public-repo/Business users can opt into native environment gates
-by setting the repo variable `ENABLE_ENV_GATES=1` plus environment reviewers.
+There is no waiting job and no timer. The parked state is just "no events
+pending" — the most robust pause GitHub offers. See
+`CONCEPTS.md` §3.4 for why environment reviewers were rejected.
 
-### Stage 3 — Developer agent (job `developer-agent`)
+### Stage 3 — Developer agent (`agent-runtime.yml`, mode `implement`)
 
-The assignment call (the heart of the stage):
+Called from `approval-handler.yml` on `/approve`. Runs entirely inside the
+Actions runner:
 
-```bash
-curl -X POST -H "Authorization: Bearer ${COPILOT_AGENT_PAT}" \
-  https://api.github.com/repos/OWNER/REPO/issues/N/assignees \
-  -d '{
-    "assignees": ["copilot-swe-agent[bot]"],
-    "agent_assignment": {
-      "target_repo": "OWNER/REPO",
-      "base_branch": "main",
-      "custom_instructions": "Implement this issue fully. ... open a DRAFT PR ... Closes #N"
-    }
-  }'
-```
+1. Check out the repo; read the issue title/body via `gh`
+2. Install `aider-chat` (open-source CLI agent)
+3. Point aider at GitHub Models (`OPENAI_API_BASE=models.github.ai/inference`,
+   `OPENAI_API_KEY=$GITHUB_TOKEN`, workflow permission `models: read`)
+4. Single-shot prompt: implement the issue, keep `npm test` green, no new deps
+5. Commit on `agent/implement-issue-N`, push, open a **draft PR**
+   (`Implements #N`) — which arms stage 4's gate
 
-Notes:
-- Requires a **user token** (`COPILOT_AGENT_PAT`) — the default
-  `GITHUB_TOKEN` cannot assign the Copilot bot (HTTP 422).
-- The agent runs on **GitHub's infrastructure**, not in Actions. Actions
-  only fires the request.
-- When the agent finishes it opens a **draft PR** whose body links the
-  issue — which triggers stage 4.
+No PAT, no paid Copilot, nothing external. Model default:
+`openai/gpt-4.1-mini`; free-plan budget ≈ 10–30 requests per run.
 
-On failure, a fallback comment explains the three usual causes: missing
-secret, PAT owner without a paid Copilot plan, agent disabled in repo.
+### Stage 4 — Unit-test agent (`agent-runtime.yml`, mode `test`)
 
-### Stage 4 — Unit-test agent (`.github/workflows/pr-quality-gate.yml` → job `unit-test-agent`)
+Called from `approval-handler.yml` on `/approve-tests` posted **on the PR**.
+The job checks out the PR head branch and runs aider with instructions to
+add/extend `node:test` files under `tests/` for every behavior in
+`git diff origin/main...HEAD`, run `npm test`, and commit — without
+touching application behavior. The commit is pushed to the same PR.
 
-| | |
-|---|---|
-| **Trigger** | `pull_request.opened` **and** `draft == true` |
-| **Gate** | `unittest-approval` environment (2nd human gate) |
-
-On approval it posts a single `@copilot` comment instructing the agent to
-add tests under `tests/` for every behavior changed, run `npm test`, and
-commit to the same PR without touching behavior.
-
-Loop safety: the comment→agent→push cycle produces a `synchronize` event,
-which the `unit-test-agent` job deliberately ignores (`if` filters on
-`action == 'opened'`), so the pipeline cannot ping-pong forever.
+Loop safety: test mode is triggered only by a maintainer comment — the
+agent's own `synchronize` pushes feed the CI gate, which never summons
+agents. A run that produces no test changes fails hard (the diff guard in
+stage 5 would reject it anyway).
 
 ### Stage 5 — CI gate (jobs `ci-gate` + `.github/workflows/ci.yml`)
 
-Two independent verifications:
+Two independent verifications on every PR push:
 
 1. **Check-run wait** — polls `GET /commits/SHA/check-runs` for a run named
-   `tests` (produced by `ci.yml`) until `conclusion == "success"`, 60 × 20s.
-2. **Diff guard** — `GET /pulls/N/files?per_page=100` (paginated) and fails
-   the pipeline unless at least one filename starts with `tests/`.
-   This enforces the *spirit* of stage 4, not just the letter.
+   `tests` (produced by `ci.yml`) until success; 60 × 20 s budget.
+2. **Diff guard** — `GET /pulls/N/files` (paginated) must contain at least
+   one `tests/` path, otherwise the pipeline fails with
+   "the unit-test agent's contribution is required".
 
-### Stage 6 — Review agent (job `review-agent`)
+### Stage 6 — Review agent (`agent-runtime.yml`, mode `review`)
 
-```bash
-gh api --method POST repos/OWNER/REPO/pulls/N/requested_reviewers \
-  -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
-```
-
-Then polls `GET /pulls/N/reviews` for a review by that login, 30 × 20s.
-Copilot's review is a **comment review** — informative, non-blocking by
-design; the blocking power sits in the CI gate + diff guard.
+Called from `pr-quality-gate.yml` after the CI gate passes. Fetches the PR
+diff (truncated to 60 KB), asks a GitHub Models inference for a structured
+review (summary + severity-tagged findings), and posts it as a **comment
+review** on the PR via `gh pr review --comment`. Non-blocking by design;
+the merge gate is the CI check + diff guard.
 
 ### Stage 7 — Auto-merge (job `auto-merge`)
 
-Idempotent chain:
-
-1. `gh pr ready` (no-op if already ready)
-2. `gh pr merge --squash --auto` — arms auto-merge if branch protection
-   exists (waits for its requirements)
-3. fallback: direct `--squash` merge (safe: our gate already enforced
-   tests + diff guard + review)
-4. final fallback: echo "already merged" (re-run safety)
+Idempotent chain: `gh pr ready || echo` → `gh pr merge --squash --auto`
+(waits for branch protection if any) → fallback direct `--squash` (safe:
+the gate already enforced tests + diff + review) → final fallback
+"already merged" (re-run safety).
 
 ### Stage 8 — Deploy to dev (`.github/workflows/deploy-dev.yml`)
 
-Trigger: `push` to `main` (i.e., the squash merge). Runs `npm test` again on
-main, packages `public/`, executes the **placeholder** deploy (echo +
-artifact upload). Replace the placeholder step with real commands; the
-trigger needs no change. Runs in the `dev-deploy` environment.
+Trigger: `push` to `main` (the squash merge). Re-runs `npm test`, packages
+`public/`, runs the **placeholder** deploy (echo + artifact upload,
+retained 7 days), and comments "🚀 Deployed to **dev**" on the merged PR.
+Replace the placeholder step with real commands; the trigger stays.
 
 ---
 
-## 3. Event-driven wiring (how stages find each other)
+## 4. Event-driven wiring (how stages find each other)
 
-There is no central controller holding state. Every stage re-enters the
-system through a GitHub event:
+No central controller holds state; every stage re-enters via a GitHub
+event, and the issue/PR **is** the state store:
 
 | Event | Workflow | Stage |
 |---|---|---|
-| `issues.opened` / `issues.reopened` | orchestrator.yml | 1–3 |
-| `pull_request.opened` (draft) | pr-quality-gate.yml | 4 |
+| `issues.opened` / `reopened` | orchestrator.yml | 1–2 |
+| `issue_comment.created` (`/approve`) | approval-handler.yml | 3 |
+| `pull_request.opened` (draft) | pr-quality-gate.yml (opt-in env gate only) | 4 (alt) |
+| `issue_comment.created` (`/approve-tests`) | approval-handler.yml | 4 |
 | `pull_request.synchronize` / `ready_for_review` / `reopened` | pr-quality-gate.yml | 5–7 |
 | `push` to `main` | deploy-dev.yml | 8 |
 
-Consequence: the system is **restartable**. If any workflow run dies, the
-next matching event re-triggers the pipeline for that issue/PR. The
-`concurrency` groups (`orchestrator-issue-N`, `pr-gate-N`) serialize runs
-per issue/PR so two pushes never race each other.
+Consequences: the system is **restartable** (close & reopen the issue, or
+re-comment `/approve`, re-runs everything after that point) and
+**observable** (the whole story lives in issue/PR comments). Concurrency
+groups (`orchestrator-issue-N`, `approval-N`, `pr-gate-N`) serialize runs
+so duplicate events never race.
 
 ---
 
-## 4. Failure modes & recovery
+## 5. Failure modes & recovery
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| `'agent-task' not found` | label missing (fixed by self-heal) | re-open the issue |
-| Run sits parked after triage | that's the gate — it's working | comment `/approve` on the issue |
-| `422` on agent assignment | missing PAT / no paid Copilot / agent disabled | fix per fallback comment on the issue |
-| CI gate times out after 20 min | `ci.yml` missing or check not named `tests` | confirm ci.yml exists on the PR branch |
-| `does not modify tests/` | developer agent skipped test stage | the diff guard is doing its job — check the unit-test agent's gate was approved |
-| Review wait times out | Copilot code review not enabled in repo settings | Settings → Copilot |
-| Merge skipped "not mergeable" | PR already merged, or conflicts | none needed / resolve conflicts |
-
-Cancel anything by **closing the issue** or closing the PR — all later
-stages check `if:` conditions that stop on closed items.
+| `'agent-task' not found` | label missing (self-heal should prevent) | re-open the issue |
+| `::error:: COPILOT_AGENT_PAT secret is missing` | legacy Copilot mode only — not used by the default aider runtime | none (informational) |
+| Agent job fails 403/429 against models endpoint | free-tier rate limit (~150 req/day) or model unavailable | wait for quota reset; or point `OPENAI_API_BASE`/`OPENAI_API_KEY` at another provider |
+| `curl (22) 401` on assignment | empty/invalid token | same as above |
+| `422`/`403` on assignment | PAT owner lacks paid Copilot plan, or agent disabled | fix plan/settings; see fallback comment |
+| Run sits parked after triage | that's the gate — working as intended | comment `/approve` on the issue |
+| Agent job fails with 403/429 from models endpoint | free-tier rate limit (~150 req/day) or model unavailable | wait for quota reset; or point `OPENAI_API_BASE`/`OPENAI_API_KEY` at another provider in agent-runtime.yml |
+| All Approval-Handler jobs "Skipped" | command in the wrong place (e.g. `/approve-tests` on an issue) | follow the hint comment; command table §2 |
+| CI gate times out (~20 min) | `ci.yml` missing or check not named `tests` | confirm ci.yml exists on the PR branch |
+| `does not modify tests/` | test stage skipped | approve the unit-test gate; diff guard doing its job |
+| Review wait times out (~10 min) | Copilot code review not enabled | Settings → Copilot |
+| Merge skipped "not mergeable" | already merged, or conflicts | none needed / resolve conflicts |
+| Environment gate never asks | private repo on Free/Pro/Team, or admin bypass | expected; use comment gates (or go public/Business + `ENABLE_ENV_GATES=1`) |
 
 ---
 
-## 5. One-time setup checklist
+## 6. One-time setup checklist
 
 ```bash
-./scripts/setup-github.sh OWNER/REPO    # labels + environments + protection
+./scripts/setup-github.sh OWNER/REPO YOUR_USERNAME
 ```
 
 Then in the Settings UI:
 
-- [ ] Secrets → Actions → `COPILOT_AGENT_PAT` (classic PAT, `repo` scope, paid Copilot account)
-- [ ] Actions → General → Workflow permissions: **Read and write**
-- [ ] Copilot → coding agent enabled (+ optionally allow Copilot to approve PRs)
-- [ ] Approval gates: comment `/approve` / `/approve-tests` (default, all plans).
-      Optional native environment gates (public repos or Business/Enterprise):
-      repo variable `ENABLE_ENV_GATES=1` + required reviewers on `dev-approval`
-      and `unittest-approval`.
+- [ ] **Actions → General → Workflow permissions** → *Read and write*
+- [ ] **No secrets required** — the agents run aider + GitHub Models inside
+      your runners using the built-in `GITHUB_TOKEN` (`models: read`).
+      Optional: add `OPENROUTER_API_KEY` etc. only if you switch providers
+      in `agent-runtime.yml`.
+- [ ] Approval gates: comment commands — nothing to configure (default)
+- [ ] Optional native gates (public repo or Business/Enterprise only):
+      repo variable `ENABLE_ENV_GATES=1` + required reviewers on
+      `dev-approval` / `unittest-approval`
 
 ---
 
-## 6. Running the demo end-to-end
+## 7. Running the demo end-to-end
 
 ```bash
 npm start          # dev server with live reload at http://localhost:8080
@@ -275,7 +282,8 @@ npm test           # unit tests (Node >= 20)
 ```
 
 1. Open an issue with the **Agent task** template
-2. Approve the `dev-approval` gate when notified
-3. Watch the Copilot agent open the draft PR
-4. Approve the `unittest-approval` gate
-5. Tests get added → CI green → Copilot review → auto-merge → deploy comment
+2. Comment **`/approve`** on the issue
+3. The Copilot agent opens a draft PR
+4. Comment **`/approve-tests`** on that PR
+5. Tests pushed → CI green → Copilot review → ready → auto-merge →
+   "🚀 Deployed to dev" comment on the PR

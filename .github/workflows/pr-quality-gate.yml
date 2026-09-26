@@ -117,42 +117,17 @@ jobs:
           echo "Unit tests present in the PR diff."
 
   review-agent:
-    name: "Agent: reviewer (Copilot code review)"
+    name: "Agent: reviewer (GitHub Models free tier)"
     needs: ci-gate
-    runs-on: ubuntu-latest
-    steps:
-      - name: Request Copilot code review via REST API
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "repos/${REPO}/pulls/${PR}/requested_reviewers" \
-            -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
-
-      - name: Wait for the Copilot review to be submitted
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          for i in $(seq 1 30); do
-            REVIEW_STATE="$(gh api "repos/${REPO}/pulls/${PR}/reviews" \
-              --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]" or .user.login == "copilot-pull-request-reviewer")] | sort_by(.submitted_at) | last | .state // empty' | head -n1)"
-            if [ -n "${REVIEW_STATE}" ]; then
-              echo "Copilot review submitted: ${REVIEW_STATE}"
-              exit 0
-            fi
-            echo "Copilot review not submitted yet (attempt ${i}/30); sleeping 20s..."
-            sleep 20
-          done
-          echo "::error::Timed out waiting for the Copilot code review."
-          exit 1
+    uses: ./.github/workflows/agent-runtime.yml
+    with:
+      mode: review
+      pr_number: ${{ github.event.pull_request.number }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      models: read
 
   auto-merge:
     name: Merge when green
