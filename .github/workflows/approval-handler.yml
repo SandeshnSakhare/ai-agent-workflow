@@ -38,6 +38,7 @@ jobs:
     with:
       mode: implement
       issue_number: ${{ github.event.issue.number }}
+    secrets: inherit   # REQUIRED: reusable workflows don't get user secrets (GEMINI_API_KEY etc.) otherwise
     permissions:
       contents: write
       pull-requests: write
@@ -54,6 +55,7 @@ jobs:
     with:
       mode: test
       pr_number: ${{ github.event.issue.number }}
+    secrets: inherit
     permissions:
       contents: write
       pull-requests: write

@@ -403,6 +403,36 @@ expensive consumer, and treat re-run-later as a legitimate recovery.
 
 ---
 
+## Issue 13 — Secrets blank in the agent workflow despite being added (reusable-workflow inheritance)
+
+**Where:** repo run, agent-runtime (implement), env dump + chain output
+
+**What we saw** — `GEMINI_API_KEY:` and `OPENROUTER_API_KEY:` printed as
+**blank** (not `***`) in the job env dump, and the chain reported
+`Google Gemini: skipped (GEMINI_API_KEY not set)` — even though the secret
+was correctly present under Repository secrets.
+
+**Root cause** — GitHub's reusable-workflow security model: a workflow
+invoked with `uses: ./.github/workflows/x.yml` does **not** inherit
+caller-defined secrets. Only the implicit `GITHUB_TOKEN` flows through
+automatically — which is exactly why GitHub Models kept working while every
+user key stayed invisible. The callers (approval-handler, pr-quality-gate)
+never passed them.
+
+**Fix** — one line per call site:
+```yaml
+uses: ./.github/workflows/agent-runtime.yml
+secrets: inherit    # ← pass caller secrets into the reusable workflow
+```
+
+**Lesson** — two different "secret not visible" bugs looked identical:
+#13 (secrets not *inherited*) vs the earlier misplacement cases (secret not
+in Repository secrets). Distinguish them by the env dump: `***` = secret
+reached the job; blank = it didn't. And reusable workflows always need
+`secrets: inherit` (or an explicit `secrets:` map) for user keys.
+
+---
+
 ## Timeline summary
 
 | # | Symptom | Class of bug | Permanent fix |
@@ -419,6 +449,7 @@ expensive consumer, and treat re-run-later as a legitimate recovery.
 | 10 | PR contained aider's own logs, no code; retries fooled | `--no-gitignore` disabled aider's self-ignore; retry check counted junk; prefix guess wrong | drop flag, exclude `.aider*` in check + scrub before commit; litellm `github/` provider route |
 | 11 | Connection errors from the models endpoint on every attempt | provider-side outage/overload (not our code) | smoke-test canary + 3-provider fallback chain, secret-gated |
 | 12 | GitHub Models failed 4 runs in a row despite 200-probes | free-tier instability; probes pass but real calls fail | **reordered chain: Gemini primary** (verified working), OpenRouter second, GitHub Models demoted to last resort; also fixed retired `gemini-2.0-flash` → `gemini-3.8-flash` (Google 404) |
+| 13 | Keys blank in agent job despite being added correctly | reusable workflows don't inherit caller secrets | `secrets: inherit` at every `uses:` call site |
 
 ---
 

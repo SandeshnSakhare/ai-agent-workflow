@@ -117,12 +117,13 @@ jobs:
           echo "Unit tests present in the PR diff."
 
   review-agent:
-    name: "Agent: reviewer (GitHub Models free tier)"
+    name: "Agent: reviewer (provider fallback chain)"
     needs: ci-gate
     uses: ./.github/workflows/agent-runtime.yml
     with:
       mode: review
       pr_number: ${{ github.event.pull_request.number }}
+    secrets: inherit   # pass user secrets (GEMINI_API_KEY / OPENROUTER_API_KEY) to the reusable workflow
     permissions:
       contents: read
       pull-requests: write
