@@ -148,3 +148,28 @@ jobs:
           gh issue comment "${ISSUE}" \
             --repo "${{ github.repository }}" \
             --body "🛑 Pipeline **cancelled** by @${{ github.event.comment.user.login }} (denial recorded)."
+
+  guidance:
+    name: "Gate: command posted in the wrong place -> hint"
+    if: >
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      ((github.event.issue.pull_request == null && startsWith(github.event.comment.body, '/approve-tests')) ||
+       (github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/approve') && !startsWith(github.event.comment.body, '/approve-tests')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Post a hint instead of staying silent
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isPR = !!context.payload.issue.pull_request;
+            const body = isPR
+              ? "ℹ️ `/approve` is an **issue** command — it starts the developer agent on an issue. On a pull request you probably want `/approve-tests`."
+              : "ℹ️ `/approve-tests` is a **pull request** command — post it on the PR that the developer agent creates (Pull requests tab). To start work on this issue, comment `/approve`.";
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body,
+            });
