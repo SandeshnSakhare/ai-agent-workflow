@@ -166,14 +166,17 @@ jobs:
             --repo "${{ github.repository }}" \
             || echo "PR already ready for review."
 
-      - name: Enable auto-merge (squash) — waits for branch protection
+      - name: Enable auto-merge (squash), fall back to direct merge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr merge "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
             --squash --auto \
-            || echo "Auto-merge already enabled (waiting for branch protection)."
+          || gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --squash \
+          || echo "Merge skipped — PR is already merged or not in a mergeable state."
 
       - name: Note on the PR
         env:

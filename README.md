@@ -44,8 +44,14 @@ Prerequisites: a **paid Copilot plan**, repo admin rights, `gh` CLI logged in
 as a Copilot-licensed user.
 
 ```bash
-./scripts/setup-github.sh        # or: ./scripts/setup-github.sh owner/repo
+./scripts/setup-github.sh                    # or: ./scripts/setup-github.sh owner/repo
+./scripts/setup-github.sh owner/repo YOUR_USERNAME   # also sets you as required reviewer
 ```
+
+> ⚠️ **Gates only pause if a reviewer is configured.** An environment with
+> no "Required reviewers" runs straight through — that's GitHub's behavior.
+> Pass your username as the 2nd argument (or add yourself in the UI) or the
+> approval gates will never wait.
 
 Then finish in the Settings UI:
 

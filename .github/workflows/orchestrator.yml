@@ -103,8 +103,10 @@ jobs:
     needs: triage
     if: needs.triage.outputs.valid == 'true'
     runs-on: ubuntu-latest
-    # ⚠️ SETUP (one-time, Settings → Environments → dev-approval):
-    #   - Add yourself (or a team) as "Required reviewers".
+    # ⚠️ The gate ONLY pauses if this environment has "Required reviewers"
+    # configured (Settings → Environments → dev-approval). With no reviewers,
+    # the job runs straight through — configure reviewers or run
+    # ./scripts/setup-github.sh OWNER/REPO YOUR_USERNAME.
     # GitHub shows "Review pending" + sends a notification; the workflow
     # pauses here until a reviewer approves or rejects.
     environment: dev-approval
@@ -124,6 +126,16 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.COPILOT_AGENT_PAT }}
     steps:
+      - name: Verify agent token is configured
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_AGENT_PAT }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::The COPILOT_AGENT_PAT secret is missing or empty. Add it under Settings → Secrets and variables → Actions → New repository secret. It must be a classic PAT with 'repo' scope, created by an account with a paid Copilot plan. Then close & reopen this issue."
+            exit 1
+          fi
+          echo "Token present (value masked)."
+
       - name: Assign Copilot coding agent to the issue
         env:
           ISSUE: ${{ github.event.issue.number }}
