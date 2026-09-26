@@ -29,6 +29,11 @@ function divide(a, b) {
   return a / b;
 }
 
+/** Return the square of a number. */
+function square(a) {
+  return a * a;
+}
+
 /** Return the arithmetic mean of an array of numbers. Empty array throws. */
 function average(values) {
   if (!Array.isArray(values) || values.length === 0) {
@@ -46,4 +51,4 @@ function percentage(part, total) {
   return Math.round((part / total) * 10000) / 100;
 }
 
-module.exports = { add, subtract, multiply, divide, average, percentage };
+module.exports = { add, subtract, multiply, divide, square, average, percentage };
