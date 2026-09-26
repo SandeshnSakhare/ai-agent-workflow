@@ -49,10 +49,18 @@ Actions runners using [aider](https://aider.chat) (open-source CLI agent) +
 (`GITHUB_TOKEN` + `models: read` — no PAT, no paid Copilot, no external
 service).
 
-> Free-tier reality check: ~150 model requests/day on the free plan; one
-> agent run ≈ 10–30 requests → a few issue-runs per day. To scale up, point
-> `OPENAI_API_BASE` / `OPENAI_API_KEY` in `agent-runtime.yml` at any
-> OpenAI-compatible provider (OpenRouter, Gemini, OpenAI, Anthropic).
+> **Provider fallback chain:** GitHub Models (default) → OpenRouter →
+> Google Gemini. If the default endpoint is down/overloaded (issue #11), the
+> agent automatically fails over — but only for providers whose secret
+> exists. Add either/both as repo secrets (Settings → Secrets and variables
+> → Actions):
+>
+> | Secret | Get key from | Free capacity |
+> |---|---|---|
+> | `OPENROUTER_API_KEY` | openrouter.ai/keys | ~50 req/day (1,000 after a one-time $10 top-up) |
+> | `GEMINI_API_KEY` | aistudio.google.com | generous daily quota |
+>
+> No secrets = GitHub Models only, which is fully functional on its own.
 
 ```bash
 ./scripts/setup-github.sh                    # or: ./scripts/setup-github.sh owner/repo

@@ -1,22 +1,28 @@
 name: Agent Runtime
 
-# Reusable coding-agent runtime: aider (open-source CLI agent) + GitHub Models
-# (free inference using the built-in GITHUB_TOKEN — no PAT, no paid Copilot).
+# Reusable coding-agent runtime with a PROVIDER FALLBACK CHAIN
+# (issue #11 fix): GitHub Models → OpenRouter → Google Gemini.
+#
+# - Default provider (GitHub Models) always works: built-in GITHUB_TOKEN,
+#   `models: read` permission, no secrets needed.
+# - Optional fallbacks activate automatically when their secrets exist:
+#     OPENROUTER_API_KEY  (https://openrouter.ai — free models, ~50 req/day)
+#     GEMINI_API_KEY      (https://aistudio.google.com — free daily quota)
+#   Get a key, add it as a repo secret, done. Missing key = provider skipped.
+# - Failover triggers: provider outage (connection errors), empty model
+#   responses, or an agent run producing no real file changes. Before
+#   switching, the chain reverts the working tree so a half-finished
+#   attempt never leaks into the next provider's run.
 #
 # Modes:
-#   implement — reads an issue, edits code on a new branch, opens a DRAFT PR
-#   test      — checks out the PR head, adds unit tests, pushes to the PR
-#   review    — posts an LLM code review on the PR
+#   implement — read an issue, edit code on a branch, open a DRAFT PR
+#   test      — check out the PR head, add unit tests, push to the PR
+#   review    — post an LLM code review on the PR (non-blocking)
 #
-# Free-tier rate limits (GitHub Models, free plan): ~15 req/min, ~150 req/day.
-# One implement/test run ≈ 10–30 requests — a few runs per day. Fine for a
-# demo pipeline; point OPENAI_API_BASE/OPENAI_API_KEY at any paid provider
-# for real workloads.
-#
-# Aider talks to GitHub Models through its OpenAI-compatible client:
-#   OPENAI_API_BASE = https://models.github.ai/inference
-#   OPENAI_API_KEY  = $GITHUB_TOKEN (requires the `models: read` permission)
-# Review mode uses the official actions/ai-inference action.
+# Model ids (overridable via the `model` input for GitHub Models):
+#   GH_MODEL      default: openai/gpt-4.1-mini
+#   OR_MODEL      default: deepseek/deepseek-chat-v5:free
+#   GEMINI_MODEL  default: gemini-2.0-flash
 
 on:
   workflow_call:
@@ -49,20 +55,15 @@ jobs:
   agent:
     name: "Agent: ${{ inputs.mode }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
-      OPENAI_API_BASE: https://models.github.ai/inference
-      OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
-      # litellm's native GitHub Models provider (aider prefix `github/`)
-      # reads GITHUB_TOKEN itself and targets models.github.ai correctly.
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      MODEL_ID: ${{ inputs.model }}
-      # aider passes unknown prefixes to litellm: `github/<vendor>/<model>`
-      # is litellm's documented GitHub Models route. (Earlier attempts:
-      # `openai/<model>` and `openai/openai/<model>` both returned empty
-      # responses from the endpoint.)
-      AIDER_MODEL: github/${{ inputs.model }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # used by litellm + probes
+      GH_MODEL: ${{ inputs.model }}
+      OR_MODEL: deepseek/deepseek-chat-v5:free
+      GEMINI_MODEL: gemini-2.0-flash
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
       - name: Check out code
@@ -74,6 +75,9 @@ jobs:
         run: |
           git config user.name "ai-agent-workflow[bot]"
           git config user.email "agent@users.noreply.github.com"
+
+      - name: Install aider
+        run: python -m pip install --quiet aider-chat
 
       # ------------------------------------------------------------------
       # implement
@@ -91,50 +95,31 @@ jobs:
             --json body \
             --jq '.body' > /tmp/issue-body.md
 
-      - name: Implement the issue with aider
+      - name: Implement the issue (provider chain)
         if: inputs.mode == 'implement'
         run: |
           set -euo pipefail
-          python -m pip install --quiet aider-chat
-
           BRANCH="agent/implement-issue-${{ inputs.issue_number }}"
           git checkout -b "${BRANCH}"
 
-          # Retry up to 3 attempts: free-tier models occasionally return
-          # empty responses. A change only counts if it is NOT aider's own
-          # housekeeping files (.gitignore, .aider* caches/history).
-          has_changes() {
-            git status --porcelain | grep -v -E '(\.gitignore$|\.aider)' | grep -q .
-          }
+          {
+            echo "Title: ${{ steps.issue.outputs.title }}"
+            echo "Body:"
+            cat /tmp/issue-body.md
+            echo
+            echo "Rules: keep changes minimal and production-quality; unit"
+            echo "tests in tests/ must keep passing (npm test); do not add"
+            echo "dependencies."
+          } > /tmp/agent-prompt.md
 
-          for ATTEMPT in 1 2 3; do
-            aider \
-              --model "${AIDER_MODEL}" \
-              --message "Implement this GitHub issue.
-          Title: ${{ steps.issue.outputs.title }}
-          Body: $(cat /tmp/issue-body.md)
-
-          Rules: keep changes minimal and production-quality; unit tests in
-          tests/ must keep passing (npm test); do not add dependencies." \
-              --yes-always \
-              --no-auto-commits \
-              --no-stream \
-              --no-show-model-warnings \
-              --no-check-update || true
-            if has_changes; then
-              echo "Attempt ${ATTEMPT}: agent produced changes."
-              break
-            fi
-            echo "Attempt ${ATTEMPT}: no real changes (empty model response?) — retrying..."
-            [ "${ATTEMPT}" = "3" ] && { echo "::error::Agent produced no changes after 3 attempts."; exit 1; }
-          done
+          bash scripts/agent-provider-chain.sh aider /tmp/agent-prompt.md
 
           git add -A
-          git status --porcelain | grep -E '^A.*\.aider' && echo "::warning::aider housekeeping files detected — removing" && git rm --cached -q .aider* 2>/dev/null || true
+          git rm --cached -q .aider* 2>/dev/null || true
           git commit -m "feat: implement issue #${{ inputs.issue_number }} (developer agent)" \
-            || { echo "::error::Agent produced no changes."; exit 1 }
-          # Force-push: agent branches are ephemeral; this makes re-runs after a
-          # partial failure (e.g. PR creation blocked) idempotent.
+            || { echo "::error::Agent produced no changes."; exit 1; }
+          # Force-push: agent branches are ephemeral; re-runs after partial
+          # failures stay idempotent.
           git push --force origin "${BRANCH}"
 
       - name: Open draft pull request
@@ -148,7 +133,7 @@ jobs:
             --title "feat: implement issue #${{ inputs.issue_number }} (developer agent)" \
             --body "Implements #${{ inputs.issue_number }}
 
-          Produced by the **developer agent** (aider + GitHub Models free tier).
+          Produced by the **developer agent** (aider + provider fallback chain).
 
           **Next step:** a maintainer comments \`/approve-tests\` on this PR to
           engage the unit-test agent. Then CI + review + auto-merge run
@@ -157,39 +142,22 @@ jobs:
       # ------------------------------------------------------------------
       # test
       # ------------------------------------------------------------------
-      - name: Check out the PR head and add tests with aider
+      - name: Add tests to the PR (provider chain)
         if: inputs.mode == 'test'
         run: |
           set -euo pipefail
-          python -m pip install --quiet aider-chat
-
           BRANCH="$(gh pr view "${{ inputs.pr_number }}" --repo "${{ github.repository }}" --json headRefName --jq .headRefName)"
           git checkout "${BRANCH}"
 
-          has_changes() {
-            git status --porcelain | grep -v -E '(\.gitignore$|\.aider)' | grep -q .
-          }
+          {
+            echo "Add or extend unit tests under tests/ for every behavior"
+            echo "changed in this PR (git diff origin/main...HEAD). Use"
+            echo "node:test and node:assert/strict; keep tests deterministic;"
+            echo "cover edge cases and error paths; run npm test to confirm"
+            echo "everything passes. Do NOT change application behavior."
+          } > /tmp/agent-prompt.md
 
-          for ATTEMPT in 1 2 3; do
-            aider \
-              --model "${AIDER_MODEL}" \
-              --message "Add or extend unit tests under tests/ for every behavior changed
-          in this PR (git diff origin/main...HEAD). Use node:test and
-          node:assert/strict; keep tests deterministic; cover edge cases and
-          error paths; run npm test to confirm everything passes. Do NOT change
-          application behavior." \
-              --yes-always \
-              --no-auto-commits \
-              --no-stream \
-              --no-show-model-warnings \
-              --no-check-update || true
-            if has_changes; then
-              echo "Attempt ${ATTEMPT}: agent produced changes."
-              break
-            fi
-            echo "Attempt ${ATTEMPT}: no changes (empty model response?) — retrying..."
-            [ "${ATTEMPT}" = "3" ] && { echo "::error::Agent produced no test changes after 3 attempts."; exit 1; }
-          done
+          bash scripts/agent-provider-chain.sh aider /tmp/agent-prompt.md
 
           git add -A
           git rm --cached -q .aider* 2>/dev/null || true
@@ -206,28 +174,32 @@ jobs:
           gh pr diff "${{ inputs.pr_number }}" --repo "${{ github.repository }}" > /tmp/pr.diff
           head -c 60000 /tmp/pr.diff > /tmp/pr.trunc.diff
 
-      - name: Generate the review (GitHub Models)
+      - name: Generate review (provider chain)
         if: inputs.mode == 'review'
-        id: inference
-        uses: actions/ai-inference@v1
-        with:
-          model: ${{ inputs.model }}
-          system-prompt: >-
-            You are a rigorous code reviewer. Review the diff for correctness,
-            security, missing tests, and error handling. Be concise. Format:
-            one-paragraph summary, then bullet findings with severity
-            (High/Medium/Low). If it looks good, say so explicitly.
-          prompt-file: /tmp/pr.trunc.diff
+        id: review
+        run: |
+          set +e
+          REVIEW="$(bash scripts/agent-provider-chain.sh review /tmp/pr.trunc.diff)"
+          RC=$?
+          set -e
+          if [ ${RC} -ne 0 ] || [ -z "${REVIEW}" ]; then
+            REVIEW="Review unavailable (all providers failed or rate-limited) — check the Actions logs."
+          fi
+          # Multiline-safe export
+          {
+            echo "REVIEW<<EOF_REVIEW"
+            echo "${REVIEW}"
+            echo "EOF_REVIEW"
+          } >> "$GITHUB_ENV"
 
       - name: Post the review on the PR
         if: inputs.mode == 'review'
+        env:
+          PR: ${{ inputs.pr_number }}
         run: |
-          REVIEW="${{ steps.inference.outputs.response }}"
-          [ -n "${REVIEW}" ] || REVIEW="Review unavailable (model call failed or rate-limited) — check the Actions logs."
-
-          gh pr review "${{ inputs.pr_number }}" \
+          gh pr review "${PR}" \
             --repo "${{ github.repository }}" \
             --comment \
-            --body "🔍 **Review agent** (aider/GitHub Models free tier):
+            --body "🔍 **Review agent** (aider + provider fallback chain):
 
           ${REVIEW}"

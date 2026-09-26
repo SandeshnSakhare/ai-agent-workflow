@@ -118,15 +118,18 @@ permissions:
 ```
 Plus repo setting: Actions → General → Workflow permissions → Read and write.
 
-### 2.8 Personal Access Tokens (PAT) — why both tokens exist
+### 2.8 Tokens: the built-in `GITHUB_TOKEN` vs PATs
 | Token | Lives | Scope | Used for |
 |---|---|---|---|
-| `GITHUB_TOKEN` | minted per run | this repo only | labels, comments, merge |
-| `COPILOT_AGENT_PAT` | you create it, stored in Secrets | your *user* identity | assigning the Copilot bot to issues |
+| `GITHUB_TOKEN` | minted per run | this repo only | labels, comments, merge, **agent inference (`models: read`), git push, PR creation** |
+| a PAT | you create it, stored in Secrets | your *user* identity | only needed for user-to-server APIs (e.g. the old Copilot-cloud assignment) — **not used in the default runtime** |
 
-The Copilot agent-assignment API only accepts **user-to-server** tokens —
-a PAT. The `GITHUB_TOKEN` is machine-to-server and gets HTTP 422.
-That's the single most common failure of this whole pattern.
+The default runtime (aider + GitHub Models) runs entirely on the built-in
+`GITHUB_TOKEN`: `models: read` for inference, `contents: write` for pushes.
+Two repo-level gates must also be open: workflow *read and write*
+permission, and **"Allow GitHub Actions to create and approve pull
+requests"** (off by default — its absence surfaces as a GraphQL error on
+`gh pr create`).
 
 ### 2.9 Secrets
 Repo secrets inject values as masked env vars: `secrets.COPILOT_AGENT_PAT`.
@@ -182,26 +185,30 @@ Every stage posts a marker comment: 🤖 Orchestrator → 👨‍💻 Developer 
 🧪 Unit-test → 🔍 Review → 🚀 Deployed. The comment thread *is* the run log —
 no external dashboard, and it's visible to anyone who opens the issue.
 
-### 3.3 Summoning remote agents (Actions as a dispatcher)
-The crucial mental model:
+### 3.3 Agent runtimes: two architectures
+**(a) Remote agent (the original Copilot design).** Actions fires one API
+call; the agent runs on the vendor's cloud and reports back via a PR.
+Actions is just "the finger that presses the button".
 
-```
-Actions job  =  the finger that presses the button
-Copilot cloud agent  =  the machine (GitHub's infra, its own sandbox,
-                        its own auth, opens PRs as copilot-swe-agent[bot])
-```
+**(b) In-runner agent (the current default).** The Actions job *is* the
+machine: it checks out the repo, installs an open-source CLI agent
+(aider), points it at an inference endpoint, and the edits happen locally
+in the runner before being pushed:
 
-Three summoning mechanisms, one per agent role:
-
-| Agent role | Mechanism | API |
+| Agent role | Trigger | Runtime |
 |---|---|---|
-| Developer | issue assignment + `agent_assignment` payload | `POST /issues/N/assignees` |
-| Unit-test | `@copilot` PR comment (joins the agent's existing session) | `POST /issues/N/comments` |
-| Reviewer | add `copilot-pull-request-reviewer[bot]` as reviewer | `POST /pulls/N/requested_reviewers` |
+| Developer | `/approve` on the issue | aider `implement` → branch + draft PR |
+| Unit-test | `/approve-tests` on the PR | aider `test` → pushes tests to the PR |
+| Reviewer | automatic after CI | LLM reviews the diff → comment review |
 
-`custom_instructions` in the assignment payload is the developer agent's
-briefing: implement fully, keep `npm test` green, open a draft PR with
-`Closes #N`.
+The prompt (issue body, rules, diff) is the agent's briefing in both
+designs. (b) needs no vendor entitlements — any OpenAI-compatible endpoint
+works (GitHub Models free tier, OpenRouter, Gemini, OpenAI, Anthropic) —
+but consumes your rate budget: one run ≈ 10–30 model calls.
+
+Lesson from the build: prefer the provider's **documented** route over
+prefix guesses — aider/litellm's `github/<vendor>/<model>` worked where two
+OpenAI-prefix guesses silently returned empty responses.
 
 ### 3.4 Human-in-the-loop gates: two implementations
 **(a) Native environment gates.** A job that references an `environment:`
@@ -329,11 +336,11 @@ improves itself under the same rules it enforces.
 | `needs` | Job dependency edge in the workflow DAG |
 | Job outputs | Values passed from one job to dependents |
 | `GITHUB_TOKEN` | Ephemeral per-run, repo-scoped, machine identity |
-| PAT | Personal token, user identity; required for Copilot assignment |
+| PAT | Personal token, user identity; only for user-to-server APIs (not needed by the default runtime) |
 | Concurrency group | Serialization key that prevents parallel runs racing |
 | Self-healing | Step repairs its own missing precondition at point of use |
 | Idempotent | Re-running a step produces the same end state |
 | Diff guard | Fails the pipeline unless the PR diff meets a structural rule |
 | Event-driven orchestration | Stages re-enter via events; issue/PR is the state |
-| `agent_assignment` | REST payload that summons the Copilot coding agent onto an issue |
+| `agent_assignment` | REST payload that summons the Copilot coding agent (legacy remote-agent mode) |
 | `@copilot` comment | Steers the *existing* Copilot session on a PR |

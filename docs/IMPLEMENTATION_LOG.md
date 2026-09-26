@@ -365,6 +365,44 @@ changes**. The chat history showed `Empty response received from LLM`.
 
 ---
 
+## Issue 11 — `litellm.InternalServerError: GithubException - Connection error` (provider outage/overload)
+
+**Where:** repo run, agent-runtime (implement), all 3 retry attempts
+
+**What we saw**
+```
+Model: github/openai/gpt-4.1-mini with diff edit format   ← route fix worked
+litellm.InternalServerError: GithubException - Connection error.
+The API provider's servers are down or overloaded.  (×8 backoffs per attempt)
+Attempt 3: no real changes — retrying...
+::error:: Agent produced no changes after 3 attempts.
+```
+
+**Root cause** — none of our code: the **GitHub Models endpoint itself**
+refused connections (server-side overload or an incident; transient).
+Every pipeline layer behaved correctly — correct model route, retries with
+exponential backoff, loud failure with zero junk committed. Total cost:
+~4.5 minutes of runner time.
+
+**Fix — observability, not logic:** a **smoke-test step** now runs a
+cost-free 5-token `curl` against the endpoint before aider starts, printing
+the provider's own HTTP status + error body in seconds (`::warning::` if
+non-200) instead of discovering an outage after a 4-minute aider loop.
+**Follow-up (permanent):** a full **provider fallback chain**
+(`scripts/agent-provider-chain.sh`) — GitHub Models → OpenRouter →
+Google Gemini — with per-provider health probes, automatic working-tree
+reverts between attempts, and secret-gated activation (providers without
+their `OPENROUTER_API_KEY` / `GEMINI_API_KEY` secret are skipped). All
+three agent modes (implement/test/review) now run through the chain.
+
+**Lesson** — distinguish *your* bugs from *the provider's* by what the
+failure shape is: our fixes (route, retries, outcome checks) all held; the
+remaining failure class belongs to the free tier's SLA (none). When a
+capability depends on a free shared endpoint, add a cheap canary before the
+expensive consumer, and treat re-run-later as a legitimate recovery.
+
+---
+
 ## Timeline summary
 
 | # | Symptom | Class of bug | Permanent fix |
@@ -377,8 +415,9 @@ changes**. The chat history showed `Empty response received from LLM`.
 | 6 | Approval gate never paused | platform plan limitation | comment-command gates (v2); env gates opt-in |
 | 7 | Command run "Skipped", no feedback | silent rejection | `guidance` hint job |
 | 8 | Actions can't create the PR (GraphQL error) | repo settings layer | enable "Allow GitHub Actions to create and approve pull requests"; force-push for re-run safety |
-| 9 | Empty LLM response (0 tokens) + non-fast-forward push | double-namespaced model id; stale YAML on re-run | `AIDER_MODEL=openai/<vendor>/<model>`; 3-attempt retry + outcome check; push fixes before re-running |
+| 9 | Empty LLM response (0 tokens) + non-fast-forward push | wrong model-route guess; stale YAML on re-run | 3-attempt retry + outcome check; force-push idempotency; push fixes before re-running (superseded by #10's final route) |
 | 10 | PR contained aider's own logs, no code; retries fooled | `--no-gitignore` disabled aider's self-ignore; retry check counted junk; prefix guess wrong | drop flag, exclude `.aider*` in check + scrub before commit; litellm `github/` provider route |
+| 11 | Connection errors from the models endpoint on every attempt | provider-side outage/overload (not our code) | smoke-test canary + 3-provider fallback chain (GitHub Models → OpenRouter → Gemini), secret-gated |
 
 ---
 
@@ -401,3 +440,22 @@ changes**. The chat history showed `Empty response received from LLM`.
    labels — all did nothing while appearing to work. The fixes lean toward
    *visible* behavior: hint comments, `::error::` annotations, audit
    comments at every stage.
+6. **An agent exiting 0 did not necessarily do the work.** Aider returned
+   success twice with zero code changes (empty model response; junk files
+   as the only diff). Always verify *outcomes* (real file changes, tests
+   passing) — never exit codes — and make retry guards immune to the
+   tool's own byproducts.
+7. **Read the artifacts the agent leaves behind.** The `.aider.chat.history.md`
+   in the PR diagnosed the entire failure by itself: prompt in, zero tokens
+   out. Agent logs/chat transcripts are black-box pipelines' best
+   observability.
+8. **Permissions have two layers.** The workflow `permissions:` block
+   requests capabilities; repo Settings → Actions governs what the token
+   may *ever* do (PR creation is off by default). Also: push YAML fixes to
+   `main` *before* re-running — runs always execute the default branch's
+   version, not your working copy.
+9. **Prefer documented provider routes over prefix guesses.** Two
+   OpenAI-compatible guesses failed identically (`openai/<model>`,
+   `openai/openai/<model>`); litellm's native `github/<vendor>/<model>`
+   route was the fix. When an integration has stacked namespaces, find the
+   vendor's own wiring guide before trial-and-error.

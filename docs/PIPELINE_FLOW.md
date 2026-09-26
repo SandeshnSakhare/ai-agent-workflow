@@ -239,16 +239,16 @@ so duplicate events never race.
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `'agent-task' not found` | label missing (self-heal should prevent) | re-open the issue |
-| `::error:: COPILOT_AGENT_PAT secret is missing` | legacy Copilot mode only — not used by the default aider runtime | none (informational) |
-| Agent job fails 403/429 against models endpoint | free-tier rate limit (~150 req/day) or model unavailable | wait for quota reset; or point `OPENAI_API_BASE`/`OPENAI_API_KEY` at another provider |
-| `curl (22) 401` on assignment | empty/invalid token | same as above |
-| `422`/`403` on assignment | PAT owner lacks paid Copilot plan, or agent disabled | fix plan/settings; see fallback comment |
 | Run sits parked after triage | that's the gate — working as intended | comment `/approve` on the issue |
-| Agent job fails with 403/429 from models endpoint | free-tier rate limit (~150 req/day) or model unavailable | wait for quota reset; or point `OPENAI_API_BASE`/`OPENAI_API_KEY` at another provider in agent-runtime.yml |
 | All Approval-Handler jobs "Skipped" | command in the wrong place (e.g. `/approve-tests` on an issue) | follow the hint comment; command table §2 |
+| `GraphQL: GitHub Actions is not permitted to create or approve pull requests` | repo setting off (default): Settings → Actions → General → Workflow permissions | tick "Allow GitHub Actions to create and approve pull requests" → Save → re-run; or create the PR manually from the pushed `agent/*` branch (body: `Implements #N`) |
+| `Empty response received from LLM (0 received)` in aider output | model id not resolvable via the OpenAI route, or free-tier/provider hiccup | fixed by the litellm `github/` route; if it recurs the retry loop fails loudly after 3 attempts → re-run, or change the default `model:` (e.g. `openai/gpt-4.1`, `anthropic/claude-sonnet-4.5`) |
+| PR diff contains `.aider.chat.history.md` / `.aider.tags.cache...` but no code | aider housekeeping files swept into the commit (old `--no-gitignore` bug) | fixed; branches from old runs still carry them — delete the branch and re-`/approve` |
+| `! [rejected] ... (non-fast-forward)` on agent push | re-running with stale YAML (fixes not yet on `main`), or old branch present | **push workflow changes to `main` BEFORE re-running**; force-push in the job makes it idempotent once current |
+| Agent job fails 403/429 against models endpoint | free-tier rate limit (~150 req/day) or model unavailable | wait for quota reset; or point `OPENAI_API_BASE`/`OPENAI_API_KEY` at another provider in agent-runtime.yml |
+| `litellm ... Connection error. The API provider's servers are down or overloaded` | provider-side outage/overload — not a pipeline bug (smoke-test step shows the provider's HTTP body in seconds) | re-run later; or change the `model` input (e.g. `openai/gpt-4.1`, `anthropic/claude-sonnet-4.5`) |
 | CI gate times out (~20 min) | `ci.yml` missing or check not named `tests` | confirm ci.yml exists on the PR branch |
 | `does not modify tests/` | test stage skipped | approve the unit-test gate; diff guard doing its job |
-| Review wait times out (~10 min) | Copilot code review not enabled | Settings → Copilot |
 | Merge skipped "not mergeable" | already merged, or conflicts | none needed / resolve conflicts |
 | Environment gate never asks | private repo on Free/Pro/Team, or admin bypass | expected; use comment gates (or go public/Business + `ENABLE_ENV_GATES=1`) |
 
@@ -283,7 +283,7 @@ npm test           # unit tests (Node >= 20)
 
 1. Open an issue with the **Agent task** template
 2. Comment **`/approve`** on the issue
-3. The Copilot agent opens a draft PR
+3. The developer agent (aider + GitHub Models) opens a draft PR
 4. Comment **`/approve-tests`** on that PR
-5. Tests pushed → CI green → Copilot review → ready → auto-merge →
+5. Tests pushed → CI green → review-agent comment → ready → auto-merge →
    "🚀 Deployed to dev" comment on the PR
