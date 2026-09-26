@@ -284,6 +284,49 @@ that crosses it.
 
 ---
 
+## Issue 9 — `Empty response received from LLM` + non-fast-forward push
+
+**Where:** repo re-run, agent-runtime (implement)
+
+**What we saw**
+```
+Empty response received from LLM. Check your provider account?
+Tokens: 3.4k sent, 0 received.
+[agent/implement-issue-5 6fd304f] feat: ... 1 file changed, 1 insertion(+)
+ → .gitignore only
+ ! [rejected] agent/implement-issue-5 -> agent/implement-issue-5 (non-fast-forward)
+```
+
+**Root causes — two, stacked:**
+
+1. **Model-ID mismatch (aider ↔ GitHub Models).** Aider's `openai/` prefix
+   selects its OpenAI-compatible *client*; GitHub Models additionally uses
+   `vendor/model` ids like `openai/gpt-4.1-mini`. Passing aider just
+   `openai/gpt-4.1-mini` (our input) hit the endpoint with an identifier it
+   could not resolve → the model returned **0 tokens**. Aider exited 0
+   anyway (it treats an empty response as non-fatal), so the job continued
+   and committed only its own `.gitignore` churn.
+2. **Old YAML on re-run.** The re-run executed the pre-`--force` workflow
+   (the fix wasn't pushed to `main` first), so the plain push was rejected
+   non-fast-forward against the previous run's real implementation branch.
+
+**Fixes**
+- Correct model string: `AIDER_MODEL = openai/` + `vendor/model`
+  (e.g. `openai/openai/gpt-4.1-mini` for the default input).
+- 3-attempt retry loop that only accepts a run when the working tree has
+  real changes (ignoring `.gitignore`), then fails loudly after 3.
+- `--no-gitignore` so aider stops polluting the commit with .gitignore edits.
+- Force-push retained for idempotent re-runs — and the ordering rule is now
+  explicit: **push workflow changes to `main` BEFORE re-running.**
+
+**Lesson** — when an integration has two layers of namespacing
+(aider's client prefix + the provider's model id), compose both explicitly
+and verify with the cheapest possible call before burning an agent run.
+Also: an agent exiting 0 without doing the work is worse than crashing —
+always verify *outcomes*, not exit codes.
+
+---
+
 ## Timeline summary
 
 | # | Symptom | Class of bug | Permanent fix |
@@ -296,6 +339,7 @@ that crosses it.
 | 6 | Approval gate never paused | platform plan limitation | comment-command gates (v2); env gates opt-in |
 | 7 | Command run "Skipped", no feedback | silent rejection | `guidance` hint job |
 | 8 | Actions can't create the PR (GraphQL error) | repo settings layer | enable "Allow GitHub Actions to create and approve pull requests"; force-push for re-run safety |
+| 9 | Empty LLM response (0 tokens) + non-fast-forward push | double-namespaced model id; stale YAML on re-run | `AIDER_MODEL=openai/<vendor>/<model>`; 3-attempt retry + outcome check; push fixes before re-running |
 
 ---
 

@@ -55,6 +55,11 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MODEL_ID: ${{ inputs.model }}
+      # aider needs its `openai/` client prefix PLUS GitHub Models' own
+      # `vendor/model` id: e.g. input openai/gpt-4.1-mini ->
+      # openai/openai/gpt-4.1-mini. Passing only `openai/<model>` made the
+      # endpoint return empty responses (0 tokens received).
+      AIDER_MODEL: openai/${{ inputs.model }}
 
     steps:
       - name: Check out code
@@ -92,17 +97,34 @@ jobs:
           BRANCH="agent/implement-issue-${{ inputs.issue_number }}"
           git checkout -b "${BRANCH}"
 
-          aider \
-            --model "${MODEL_ID}" \
-            --message "Implement this GitHub issue.
+          # Retry up to 3 attempts: free-tier models occasionally return
+          # empty responses. Retry only if the working tree has no real
+          # changes (ignoring aider's .gitignore churn).
+          has_changes() {
+            git status --porcelain | grep -v -E '\.gitignore$' | grep -q .
+          }
+
+          for ATTEMPT in 1 2 3; do
+            aider \
+              --model "${AIDER_MODEL}" \
+              --message "Implement this GitHub issue.
           Title: ${{ steps.issue.outputs.title }}
           Body: $(cat /tmp/issue-body.md)
 
           Rules: keep changes minimal and production-quality; unit tests in
           tests/ must keep passing (npm test); do not add dependencies." \
-            --yes-always \
-            --no-auto-commits \
-            --no-check-update
+              --yes-always \
+              --no-auto-commits \
+              --no-gitignore \
+              --no-show-model-warnings \
+              --no-check-update || true
+            if has_changes; then
+              echo "Attempt ${ATTEMPT}: agent produced changes."
+              break
+            fi
+            echo "Attempt ${ATTEMPT}: no changes (empty model response?) — retrying..."
+            [ "${ATTEMPT}" = "3" ] && { echo "::error::Agent produced no changes after 3 attempts."; exit 1; }
+          done
 
           git add -A
           git commit -m "feat: implement issue #${{ inputs.issue_number }} (developer agent)" \
@@ -140,21 +162,35 @@ jobs:
           BRANCH="$(gh pr view "${{ inputs.pr_number }}" --repo "${{ github.repository }}" --json headRefName --jq .headRefName)"
           git checkout "${BRANCH}"
 
-          aider \
-            --model "${MODEL_ID}" \
-            --message "Add or extend unit tests under tests/ for every behavior changed
+          has_changes() {
+            git status --porcelain | grep -v -E '\.gitignore$' | grep -q .
+          }
+
+          for ATTEMPT in 1 2 3; do
+            aider \
+              --model "${AIDER_MODEL}" \
+              --message "Add or extend unit tests under tests/ for every behavior changed
           in this PR (git diff origin/main...HEAD). Use node:test and
           node:assert/strict; keep tests deterministic; cover edge cases and
           error paths; run npm test to confirm everything passes. Do NOT change
           application behavior." \
-            --yes-always \
-            --no-auto-commits \
-            --no-check-update
+              --yes-always \
+              --no-auto-commits \
+              --no-gitignore \
+              --no-show-model-warnings \
+              --no-check-update || true
+            if has_changes; then
+              echo "Attempt ${ATTEMPT}: agent produced changes."
+              break
+            fi
+            echo "Attempt ${ATTEMPT}: no changes (empty model response?) — retrying..."
+            [ "${ATTEMPT}" = "3" ] && { echo "::error::Agent produced no test changes after 3 attempts."; exit 1; }
+          done
 
           git add -A
           git commit -m "test: add unit tests for PR #${{ inputs.pr_number }} (unit-test agent)" \
             || { echo "::error::Agent produced no test changes — the diff guard would reject this anyway."; exit 1; }
-          git push origin "${BRANCH}"
+          git push --force origin "${BRANCH}"
 
       # ------------------------------------------------------------------
       # review
