@@ -55,23 +55,27 @@ as a Copilot-licensed user.
 
 Then finish in the Settings UI:
 
-1. **Environments → dev-approval → Required reviewers** → add yourself.
-   This is the "approval notification" — GitHub sends it and blocks the run.
-2. **Environments → unittest-approval → Required reviewers** → add yourself.
-3. **Secrets → Actions** → `COPILOT_AGENT_PAT` — a classic PAT with `repo`
+1. **Secrets → Actions** → `COPILOT_AGENT_PAT` — a classic PAT with `repo`
    scope from the Copilot-licensed account (the default `GITHUB_TOKEN` cannot
    assign the Copilot bot to issues).
-4. **Actions → General → Workflow permissions** → *Read and write*.
-5. **Copilot → Coding agent** → enabled; optionally allow Copilot to approve
+2. **Actions → General → Workflow permissions** → *Read and write*.
+3. **Copilot → Coding agent** → enabled; optionally allow Copilot to approve
    PRs so its review can satisfy the 1-approval requirement.
+
+> **Approval gates are comment-based** (`/approve`, `/approve-tests`, `/deny`
+> posted by you on the issue/PR). Environment required-reviewers are NOT used
+> by default because GitHub only enforces them on **public** repos for
+> Free/Pro/Team plans, and repo admins bypass them otherwise. If your repo is
+> public (or you're on Business/Enterprise), you can opt into native
+> environment gates: set the repo variable `ENABLE_ENV_GATES=1` and add
+> required reviewers to `dev-approval` / `unittest-approval`.
 
 ## Run it
 
 1. Open a new issue using the **Agent task** template.
-2. Approve the `Orchestrator` run when GitHub asks you to review the
-   `dev-approval` environment.
-3. The Copilot coding agent opens a draft PR; approve the `unittest-approval`
-   gate when prompted — the test agent then extends the PR.
+2. Comment **`/approve`** on the issue (this is the approval gate).
+3. The Copilot coding agent opens a draft PR; comment **`/approve-tests`**
+   on the PR — the test agent then extends the PR.
 4. CI runs the tests, Copilot code review runs, the PR becomes ready and
    auto-merges, and `Deploy to dev` runs on `main`.
 

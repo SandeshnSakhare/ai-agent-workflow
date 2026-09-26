@@ -28,11 +28,10 @@ gates, etc.), see [`CONCEPTS.md`](./CONCEPTS.md).
    └────────┬───────────────────────┘                             │
             ▼                                                     │
    ┌────────────────────────────────┐                             │
-   │ STAGE 2 — APPROVAL GATE        │  ◀── GitHub sends you a     │
-   │ job runs in `dev-approval`     │      "review pending"       │
-   │ environment (required reviewer)│      notification HERE      │
-   │ ⏸ workflow pauses until you    │                             │
-   │   approve in the Actions UI    │                             │
+   │ STAGE 2 — APPROVAL GATE        │  ◀── YOU comment /approve   │
+   │ pipeline parks after triage;   │      on the issue (works on │
+   │ nothing runs until a           │      every plan; private    │
+   │ maintainer posts /approve      │      repos included)        │
    └────────┬───────────────────────┘                             │
             ▼ (approved)                                          │
    ┌────────────────────────────────┐                             │
@@ -46,9 +45,9 @@ gates, etc.), see [`CONCEPTS.md`](./CONCEPTS.md).
    └────────┬───────────────────────┘                             │
             ▼ (draft PR opened → trigger: pull_request.opened)    │
    ┌────────────────────────────────┐                             │
-   │ STAGE 4 — UNIT-TEST AGENT      │ pr-quality-gate.yml         │
-   │ job runs in `unittest-approval`│                             │
-   │ environment ⏸ (2nd gate) ──────┼─────────────────────────────┘
+   │ STAGE 4 — UNIT-TEST AGENT      │                             │
+   │ YOU comment /approve-tests     │                             │
+   │ on the PR ⏸ (2nd gate) ────────┼─────────────────────────────┘
    │ on approval: posts "@copilot   │
    │ add unit tests..." comment     │
    │ 🧪 the same Copilot session    │
@@ -113,17 +112,22 @@ Failure behavior: if validation fails, `approval-gate` is skipped via
 `needs.triage.outputs.valid == 'true'` — the pipeline halts *before* the
 gate instead of requesting approval for a dead run.
 
-### Stage 2 — Approval gate (job `approval-gate`)
+### Stage 2 — Approval gate (comment command via `approval-handler.yml`)
 
 | | |
 |---|---|
-| **Mechanism** | `environment: dev-approval` with required reviewers |
-| **Notification** | GitHub emails/notifies every required reviewer |
-| **Timeout** | 7 days (GitHub default), then the job fails |
+| **Mechanism** | maintainer posts `/approve` on the issue |
+| **Authorization** | `author_association` must be OWNER / MEMBER / COLLABORATOR |
+| **Trigger** | `issue_comment.created` → `approval-handler.yml` |
+| **Cancel** | `/deny` comment, or close the issue |
 
-The job body is a single `echo` — the entire logic of this stage *is* the
-environment reference. Approve in the web UI → job resumes instantly.
-Reject → job fails → downstream agents never run.
+Why not environment required-reviewers? Two documented GitHub behaviors
+bypass them on personal repos: (1) on Free/Pro/Team plans required reviewers
+are only enforced on **public** repositories; (2) repo **admins bypass**
+environment protection rules by default. The comment gate works on every
+plan, keeps the audit trail in the issue thread, and is event-driven (no
+polling). Public-repo/Business users can opt into native environment gates
+by setting the repo variable `ENABLE_ENV_GATES=1` plus environment reviewers.
 
 ### Stage 3 — Developer agent (job `developer-agent`)
 
@@ -233,7 +237,7 @@ per issue/PR so two pushes never race each other.
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `'agent-task' not found` | label missing (fixed by self-heal) | re-open the issue |
-| Run stuck "Waiting for review" | that's the gate — it's working | approve in Actions UI |
+| Run sits parked after triage | that's the gate — it's working | comment `/approve` on the issue |
 | `422` on agent assignment | missing PAT / no paid Copilot / agent disabled | fix per fallback comment on the issue |
 | CI gate times out after 20 min | `ci.yml` missing or check not named `tests` | confirm ci.yml exists on the PR branch |
 | `does not modify tests/` | developer agent skipped test stage | the diff guard is doing its job — check the unit-test agent's gate was approved |
@@ -253,11 +257,13 @@ stages check `if:` conditions that stop on closed items.
 
 Then in the Settings UI:
 
-- [ ] Environments → `dev-approval` → Required reviewers: add yourself
-- [ ] Environments → `unittest-approval` → Required reviewers: add yourself
 - [ ] Secrets → Actions → `COPILOT_AGENT_PAT` (classic PAT, `repo` scope, paid Copilot account)
 - [ ] Actions → General → Workflow permissions: **Read and write**
 - [ ] Copilot → coding agent enabled (+ optionally allow Copilot to approve PRs)
+- [ ] Approval gates: comment `/approve` / `/approve-tests` (default, all plans).
+      Optional native environment gates (public repos or Business/Enterprise):
+      repo variable `ENABLE_ENV_GATES=1` + required reviewers on `dev-approval`
+      and `unittest-approval`.
 
 ---
 

@@ -1,0 +1,150 @@
+name: Approval Handler
+
+# Comment-based approval gates. Why not environment reviewers? Two documented
+# GitHub behaviors make them unreliable on personal repos:
+#   1. On Free/Pro/Team plans, required reviewers are only enforced on PUBLIC
+#      repositories (docs: Deployments and environments).
+#   2. Repo admins bypass environment protections by default.
+# A `/approve` comment gate works on every plan and repo visibility, is fully
+# auditable in the issue/PR thread, and is event-driven (no polling minutes).
+#
+# Commands (must be posted by the repo OWNER, a MEMBER, or a COLLABORATOR):
+#   /approve        on an issue  -> assign the developer agent (Copilot)
+#   /approve-tests  on a PR      -> engage the unit-test agent (@copilot)
+#   /deny           on either    -> mark the pipeline cancelled
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: approval-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  developer-agent:
+    name: "Gate: /approve -> developer agent"
+    if: >
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.comment.body, '/approve') &&
+      !startsWith(github.event.comment.body, '/approve-tests') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.COPILOT_AGENT_PAT }}
+    steps:
+      - name: Acknowledge approval
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "✅ Approved by @${{ github.event.comment.user.login }} — assigning the **developer agent**."
+
+      - name: Verify agent token is configured
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_AGENT_PAT }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::The COPILOT_AGENT_PAT secret is missing or empty. Add it under Settings → Secrets and variables → Actions → New repository secret. It must be a classic PAT with 'repo' scope, created by an account with a paid Copilot plan. Then post /approve again."
+            exit 1
+          fi
+          echo "Token present (value masked)."
+
+      - name: Assign Copilot coding agent to the issue
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          curl -sfS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/issues/${ISSUE}/assignees" \
+            -d '{
+              "assignees": ["copilot-swe-agent[bot]"],
+              "agent_assignment": {
+                "target_repo": "'"${REPO}"'",
+                "base_branch": "main",
+                "custom_instructions": "Implement this issue fully. Keep changes minimal and production-quality. Ensure the unit-test suite in tests/ still passes (npm test). When done, open a DRAFT pull request back to main that references Closes #'"${ISSUE}"'."
+              }
+            }'
+
+      - name: Record hand-off on the issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "👨‍💻 **Developer agent** assigned (Copilot coding agent). It will open a **draft PR** referencing this issue — the pipeline continues there automatically."
+
+      - name: Fallback notice if assignment failed
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: "❌ Could not assign the Copilot coding agent. Check that: (1) the `COPILOT_AGENT_PAT` secret is set (classic PAT with `repo` scope), (2) the PAT owner has a **paid Copilot plan**, (3) Copilot cloud agent is enabled for this repository. Then post `/approve` again.",
+            });
+
+  unit-test-agent:
+    name: "Gate: /approve-tests -> unit-test agent"
+    if: >
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/approve-tests') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Instruct the unit-test agent to extend the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          gh pr comment "${PR}" \
+            --repo "${{ github.repository }}" \
+            --body "@copilot Great work on the implementation. Before this PR can be reviewed, extend this same pull request with unit tests: add/extend tests under tests/ for every behavior you added or changed in scripts/, keep them deterministic, cover edge cases and error paths, run npm test to confirm everything passes locally, and commit the tests to this PR. Do not modify application behavior while adding tests."
+
+      - name: Acknowledge on the PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          gh pr comment "${PR}" \
+            --repo "${{ github.repository }}" \
+            --body "🧪 **Unit-test agent** engaged (approved by @${{ github.event.comment.user.login }}) — waiting for it to push tests to this PR."
+
+  denied:
+    name: "Gate: /deny -> cancel pipeline"
+    if: >
+      startsWith(github.event.comment.body, '/deny') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Record cancellation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "🛑 Pipeline **cancelled** by @${{ github.event.comment.user.login }} (denial recorded)."

@@ -203,21 +203,39 @@ Three summoning mechanisms, one per agent role:
 briefing: implement fully, keep `npm test` green, open a draft PR with
 `Closes #N`.
 
-### 3.4 Human-in-the-loop gates: environments + required reviewers
-A job that references an `environment:` with required reviewers **pauses
-before executing**. GitHub shows "Review pending", notifies the reviewers,
-and resumes (or fails) on their verdict. This single primitive is both
-approval gates in the pipeline:
+### 3.4 Human-in-the-loop gates: two implementations
+**(a) Native environment gates.** A job that references an `environment:`
+with required reviewers **pauses before executing**: GitHub shows "Review
+pending", notifies reviewers, resumes on approval. Beautiful — with two
+documented gotchas that silently bypass it:
+
+1. **Plan/visibility limit:** on Free/Pro/Team plans, required reviewers are
+   only enforced on **public** repositories (GitHub docs, "Deployments and
+   environments"). Private repo + free plan = the gate never engages, no
+   error, no warning.
+2. **Admin bypass:** repo administrators skip environment protection rules
+   by default — and in a personal repo you are the admin.
+
+This bit us in practice: the workflow logged "approved" immediately and the
+user never saw an approval prompt. Environment gates are only dependable on
+public repos (individual plans) or Business/Enterprise.
+
+**(b) Comment-command gates (the default in this pipeline).** A workflow
+listens for `issue_comment.created` and reacts to `/approve` / `/deny` /
+`/approve-tests` posted by someone whose `author_association` is OWNER,
+MEMBER, or COLLABORATOR:
 
 ```yaml
-approval-gate:
-  environment: dev-approval      # ← the entire gate is this line
-steps:
-  - run: echo "approved, continuing"
+if: startsWith(github.event.comment.body, '/approve') &&
+    contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+             github.event.comment.author_association)
 ```
 
-No custom approval bot, no external ticketing — the notification, the UI,
-the audit trail are all native GitHub. Timeout after 7 days = run fails.
+Works on every plan and visibility, is fully auditable in the thread, and
+stays event-driven (no polling). The `author_association` check is what
+stops random drive-by users from approving. Trade-off vs (a): no built-in
+notification email — post the approval request as an issue comment and let
+GitHub's subscribe/mention notifications carry it.
 
 ### 3.5 Locks and idempotency (re-run safety)
 Every merge-side step tolerates being executed twice:

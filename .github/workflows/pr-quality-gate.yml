@@ -35,13 +35,14 @@ concurrency:
 jobs:
   unit-test-agent:
     name: "Agent: unit tests (@copilot)"
-    # Only on the initial draft open. Later pushes (the test agent's own) are
-    # handled by the ci-gate below, so there is no loop.
-    if: github.event.action == 'opened' && github.event.pull_request.draft == true
+    # Opt-in native gate: only active if the repo variable ENABLE_ENV_GATES=1
+    # is set AND the unittest-approval environment has required reviewers.
+    # The DEFAULT unit-test path is the /approve-tests comment gate in
+    # approval-handler.yml (works on all plans / private repos).
+    # Runs on initial draft-open only, so agent pushes (synchronize) never
+    # re-trigger it — no loops.
+    if: github.event.action == 'opened' && github.event.pull_request.draft == true && vars.ENABLE_ENV_GATES == '1'
     runs-on: ubuntu-latest
-    # One-time setup: Settings → Environments → "unittest-approval" →
-    # "Required reviewers" → add yourself. GitHub will notify you, the job
-    # pauses until you approve, then the @copilot comment is posted.
     environment: unittest-approval
     steps:
       - name: Instruct the unit-test agent to extend the PR

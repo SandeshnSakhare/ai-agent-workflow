@@ -1,16 +1,19 @@
 name: Orchestrator
 
-# Pipeline stages 1-3:
+# Pipeline stages 1-2:
 #   1. New issue -> validate + label + comment (orchestrator ack)
-#   2. Approval gate -> job runs in the protected "dev-approval" environment;
-#      GitHub notifies the required reviewers ("review pending"), and the
-#      pipeline blocks until they approve. Rejection or timeout fails the run.
-#   3. On approval -> assign the Copilot coding agent (developer agent) to the
-#      issue via the REST agent-assignment API. The agent opens a DRAFT pull
-#      request linked to the issue when it finishes.
+#   2. Approval gate -> comment-based. The orchestrator stops after asking for
+#      approval; posting `/approve` on the issue (approval-handler.yml)
+#      assigns the Copilot coding agent (developer agent), which opens a
+#      DRAFT pull request linked to the issue when it finishes.
+#
+# Why a comment gate instead of environment required-reviewers? On GitHub
+# Free/Pro/Team plans, required reviewers are only enforced on PUBLIC repos,
+# and repo admins bypass environment protections by default. A /approve
+# comment works everywhere and is auditable in the issue thread.
 #
 # Stages 4-6 (unit-test agent, CI gate, review agent, auto-merge) live in
-# pr-quality-gate.yml; deployment lives in deploy-dev.yml.
+# pr-quality-gate.yml + approval-handler.yml; deployment in deploy-dev.yml.
 
 on:
   issues:
@@ -74,7 +77,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --add-label "agent-task"
 
-      - name: Post orchestrator acknowledgement
+      - name: Post orchestrator acknowledgement + approval request
         if: steps.validate.outputs.valid == 'true'
         uses: actions/github-script@v7
         with:
@@ -87,91 +90,24 @@ jobs:
                 `🤖 **Orchestrator** — task received (issue #${n}).`,
                 ``,
                 `Pipeline plan:`,
-                `1. ⏳ **Approval gate** — waiting for a required reviewer of the \`dev-approval\` environment. GitHub has notified you ("review pending").`,
+                `1. ⏸ **Approval gate** — a maintainer must comment \`/approve\` on this issue to start work (or \`/deny\` to cancel).`,
                 `2. ▶️ On approval, the **developer agent** (Copilot coding agent) implements the task and opens a **draft pull request**.`,
-                `3. 🧪 The **unit-test agent** then adds/updates unit tests on the PR (gated by the \`unittest-approval\` environment).`,
+                `3. 🧪 A maintainer comments \`/approve-tests\` on the PR — the **unit-test agent** then adds/updates unit tests on the PR.`,
                 `4. ✅ CI runs the unit-test suite; 🔍 the **review agent** (Copilot code review) reviews the changes.`,
                 `5. 🔀 If everything is green, the PR **auto-merges** into \`main\`.`,
                 `6. 🚀 The merge triggers the **deploy-to-dev** workflow.`,
                 ``,
-                `_Close this issue to cancel the run._`,
+                `_Commands: \`/approve\` · \`/approve-tests\` (on the PR) · \`/deny\`. Closing this issue also cancels the run._`,
               ].join('\n'),
             });
 
-  approval-gate:
-    name: "Gate: human approval (dev-approval)"
+  await-approval:
+    name: "Gate: waiting for /approve comment"
     needs: triage
     if: needs.triage.outputs.valid == 'true'
     runs-on: ubuntu-latest
-    # ⚠️ The gate ONLY pauses if this environment has "Required reviewers"
-    # configured (Settings → Environments → dev-approval). With no reviewers,
-    # the job runs straight through — configure reviewers or run
-    # ./scripts/setup-github.sh OWNER/REPO YOUR_USERNAME.
-    # GitHub shows "Review pending" + sends a notification; the workflow
-    # pauses here until a reviewer approves or rejects.
-    environment: dev-approval
     steps:
-      - name: Approval granted — continue pipeline
+      - name: Pipeline parked
         run: |
-          echo "Environment 'dev-approval' approved."
-          echo "Continuing to developer-agent assignment."
-
-  developer-agent:
-    name: "Agent: developer (Copilot coding agent)"
-    needs: approval-gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ secrets.COPILOT_AGENT_PAT }}
-    steps:
-      - name: Verify agent token is configured
-        env:
-          GH_TOKEN: ${{ secrets.COPILOT_AGENT_PAT }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::The COPILOT_AGENT_PAT secret is missing or empty. Add it under Settings → Secrets and variables → Actions → New repository secret. It must be a classic PAT with 'repo' scope, created by an account with a paid Copilot plan. Then close & reopen this issue."
-            exit 1
-          fi
-          echo "Token present (value masked)."
-
-      - name: Assign Copilot coding agent to the issue
-        env:
-          ISSUE: ${{ github.event.issue.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          curl -sfS -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${REPO}/issues/${ISSUE}/assignees" \
-            -d '{
-              "assignees": ["copilot-swe-agent[bot]"],
-              "agent_assignment": {
-                "target_repo": "'"${REPO}"'",
-                "base_branch": "main",
-                "custom_instructions": "Implement this issue fully. Keep changes minimal and production-quality. Ensure the unit-test suite in tests/ still passes (npm test). When done, open a DRAFT pull request back to main that references Closes #'"${ISSUE}"'."
-              }
-            }'
-
-      - name: Record hand-off on the issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE: ${{ github.event.issue.number }}
-        run: |
-          gh issue comment "${ISSUE}" \
-            --repo "${{ github.repository }}" \
-            --body "👨‍💻 **Developer agent** assigned (Copilot coding agent). It will open a **draft PR** referencing this issue — the pipeline continues there automatically."
-
-      - name: Fallback notice if assignment failed
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              ...context.repo,
-              issue_number: context.issue.number,
-              body: "❌ Could not assign the Copilot coding agent. Check that: (1) the `COPILOT_AGENT_PAT` secret is set (classic PAT with `repo` scope, or fine-grained with Metadata read + Actions/Contents/Issues/Pull requests read-write), (2) the PAT owner has a **paid Copilot plan**, (3) Copilot cloud agent is enabled for this repository.",
-            });
+          echo "Triage complete. Pipeline is parked until a maintainer posts '/approve' on this issue."
+          echo "The approval-handler.yml workflow will pick it up from the comment event."
