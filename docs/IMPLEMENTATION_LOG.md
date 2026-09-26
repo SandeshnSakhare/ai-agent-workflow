@@ -417,7 +417,8 @@ expensive consumer, and treat re-run-later as a legitimate recovery.
 | 8 | Actions can't create the PR (GraphQL error) | repo settings layer | enable "Allow GitHub Actions to create and approve pull requests"; force-push for re-run safety |
 | 9 | Empty LLM response (0 tokens) + non-fast-forward push | wrong model-route guess; stale YAML on re-run | 3-attempt retry + outcome check; force-push idempotency; push fixes before re-running (superseded by #10's final route) |
 | 10 | PR contained aider's own logs, no code; retries fooled | `--no-gitignore` disabled aider's self-ignore; retry check counted junk; prefix guess wrong | drop flag, exclude `.aider*` in check + scrub before commit; litellm `github/` provider route |
-| 11 | Connection errors from the models endpoint on every attempt | provider-side outage/overload (not our code) | smoke-test canary + 3-provider fallback chain (GitHub Models → OpenRouter → Gemini), secret-gated |
+| 11 | Connection errors from the models endpoint on every attempt | provider-side outage/overload (not our code) | smoke-test canary + 3-provider fallback chain, secret-gated |
+| 12 | GitHub Models failed 4 runs in a row despite 200-probes | free-tier instability; probes pass but real calls fail | **reordered chain: Gemini primary** (verified working), OpenRouter second, GitHub Models demoted to last resort; also fixed retired `gemini-2.0-flash` → `gemini-3.8-flash` (Google 404) |
 
 ---
 

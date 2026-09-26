@@ -246,7 +246,8 @@ so duplicate events never race.
 | PR diff contains `.aider.chat.history.md` / `.aider.tags.cache...` but no code | aider housekeeping files swept into the commit (old `--no-gitignore` bug) | fixed; branches from old runs still carry them — delete the branch and re-`/approve` |
 | `! [rejected] ... (non-fast-forward)` on agent push | re-running with stale YAML (fixes not yet on `main`), or old branch present | **push workflow changes to `main` BEFORE re-running**; force-push in the job makes it idempotent once current |
 | Agent job fails 403/429 against models endpoint | free-tier rate limit (~150 req/day) or model unavailable | wait for quota reset; or point `OPENAI_API_BASE`/`OPENAI_API_KEY` at another provider in agent-runtime.yml |
-| `litellm ... Connection error. The API provider's servers are down or overloaded` | provider-side outage/overload — not a pipeline bug (smoke-test step shows the provider's HTTP body in seconds) | re-run later; or change the `model` input (e.g. `openai/gpt-4.1`, `anthropic/claude-sonnet-4.5`) |
+| `litellm ... Connection error. The API provider's servers are down or overloaded` | provider-side outage/overload — not a pipeline bug (smoke-test step shows the provider's HTTP body in seconds) | the chain fails over automatically: Gemini → OpenRouter → GitHub Models (ensure `GEMINI_API_KEY` secret is set as Repository secret) |
+| Gemini probe/review returns `404 model no longer available` | model id retired by Google (e.g. `gemini-2.0-flash`) | use the current id (`gemini-3.8-flash` as of Sep 2026) — `GEMINI_MODEL` env in agent-runtime.yml |
 | CI gate times out (~20 min) | `ci.yml` missing or check not named `tests` | confirm ci.yml exists on the PR branch |
 | `does not modify tests/` | test stage skipped | approve the unit-test gate; diff guard doing its job |
 | Merge skipped "not mergeable" | already merged, or conflicts | none needed / resolve conflicts |

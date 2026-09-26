@@ -49,9 +49,9 @@ Actions runners using [aider](https://aider.chat) (open-source CLI agent) +
 (`GITHUB_TOKEN` + `models: read` — no PAT, no paid Copilot, no external
 service).
 
-> **Provider fallback chain:** GitHub Models (default) → OpenRouter →
-> Google Gemini. If the default endpoint is down/overloaded (issue #11), the
-> agent automatically fails over — but only for providers whose secret
+> **Provider fallback chain:** Google Gemini (primary, most reliable free
+> tier) → OpenRouter → GitHub Models (last resort — repeatedly overloaded
+> in practice). Failover is automatic — but only for providers whose secret
 > exists. Add either/both as repo secrets (Settings → Secrets and variables
 > → Actions):
 >

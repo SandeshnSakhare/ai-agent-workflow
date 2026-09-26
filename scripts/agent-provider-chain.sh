@@ -85,13 +85,17 @@ case "${SUBCOMMAND}" in
     PROMPT_FILE="${ARG_FILE:?prompt file required}"
     echo "==> Trying provider chain (implement/test)..."
 
-    # 1. GitHub Models -----------------------------------------------------
-    echo "  [1/3] GitHub Models (${GH_MODEL})"
-    if probe "github-models" "https://models.github.ai/inference" "${GITHUB_TOKEN:?}" "${GH_MODEL}" \
-       && run_aider "github-models" "github/${GH_MODEL}" "https://models.github.ai/inference" "${GITHUB_TOKEN}" "${PROMPT_FILE}"; then
-      exit 0
+    # 1. Google Gemini (primary — most reliable free tier; used when key set)
+    if [ -n "${GEMINI_API_KEY:-}" ]; then
+      echo "  [1/3] Google Gemini (${GEMINI_MODEL})"
+      if probe "gemini" "https://generativelanguage.googleapis.com/v1beta/openai" "${GEMINI_API_KEY}" "${GEMINI_MODEL}" \
+         && run_aider "gemini" "gemini/${GEMINI_MODEL}" "https://generativelanguage.googleapis.com/v1beta/openai" "${GEMINI_API_KEY}" "${PROMPT_FILE}"; then
+        exit 0
+      fi
+      git checkout -- . 2>/dev/null || true; git clean -fd --exclude=.aider* 2>/dev/null || true
+    else
+      echo "  [1/3] Google Gemini: skipped (GEMINI_API_KEY not set)"
     fi
-    git checkout -- . 2>/dev/null || true; git clean -fd --exclude=.aider* 2>/dev/null || true
 
     # 2. OpenRouter --------------------------------------------------------
     if [ -n "${OPENROUTER_API_KEY:-}" ]; then
@@ -105,18 +109,13 @@ case "${SUBCOMMAND}" in
       echo "  [2/3] OpenRouter: skipped (OPENROUTER_API_KEY not set)"
     fi
 
-    # 3. Google Gemini -----------------------------------------------------
-    if [ -n "${GEMINI_API_KEY:-}" ]; then
-      echo "  [3/3] Google Gemini (${GEMINI_MODEL})"
-      # Gemini's OpenAI-compatible endpoint
-      if probe "gemini" "https://generativelanguage.googleapis.com/v1beta/openai" "${GEMINI_API_KEY}" "${GEMINI_MODEL}" \
-         && run_aider "gemini" "gemini/${GEMINI_MODEL}" "https://generativelanguage.googleapis.com/v1beta/openai" "${GEMINI_API_KEY}" "${PROMPT_FILE}"; then
-        exit 0
-      fi
-      git checkout -- . 2>/dev/null || true; git clean -fd --exclude=.aider* 2>/dev/null || true
-    else
-      echo "  [3/3] Google Gemini: skipped (GEMINI_API_KEY not set)"
+    # 3. GitHub Models (last resort — free but currently unstable)
+    echo "  [3/3] GitHub Models (${GH_MODEL})"
+    if probe "github-models" "https://models.github.ai/inference" "${GITHUB_TOKEN:?}" "${GH_MODEL}" \
+       && run_aider "github-models" "github/${GH_MODEL}" "https://models.github.ai/inference" "${GITHUB_TOKEN}" "${PROMPT_FILE}"; then
+      exit 0
     fi
+    git checkout -- . 2>/dev/null || true; git clean -fd --exclude=.aider* 2>/dev/null || true
 
     echo "::error::All providers failed or produced no changes. Add OPENROUTER_API_KEY / GEMINI_API_KEY repo secrets for fallback capacity, or re-run later."
     exit 1
@@ -162,9 +161,9 @@ except Exception:
 
     SYSTEM_PROMPT="You are a rigorous code reviewer. Review the diff for correctness, security, missing tests, and error handling. Be concise. Format: one-paragraph summary, then bullet findings with severity (High/Medium/Low). If it looks good, say so explicitly."
 
-    if try_review "github-models" "https://models.github.ai/inference" "${GITHUB_TOKEN:-}" "${GH_MODEL}" "${SYSTEM_PROMPT}"; then exit 0; fi
-    if try_review "openrouter"    "https://openrouter.ai/api/v1"     "${OPENROUTER_API_KEY:-}" "${OR_MODEL}" "${SYSTEM_PROMPT}"; then exit 0; fi
     if try_review "gemini"        "https://generativelanguage.googleapis.com/v1beta/openai" "${GEMINI_API_KEY:-}" "${GEMINI_MODEL}" "${SYSTEM_PROMPT}"; then exit 0; fi
+    if try_review "openrouter"    "https://openrouter.ai/api/v1"     "${OPENROUTER_API_KEY:-}" "${OR_MODEL}" "${SYSTEM_PROMPT}"; then exit 0; fi
+    if try_review "github-models" "https://models.github.ai/inference" "${GITHUB_TOKEN:-}" "${GH_MODEL}" "${SYSTEM_PROMPT}"; then exit 0; fi
 
     echo "::warning::All providers failed for review — continuing without a review."
     echo "Review unavailable (all providers failed or rate-limited). Check the Actions logs."

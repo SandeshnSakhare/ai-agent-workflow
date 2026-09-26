@@ -1,7 +1,10 @@
 name: Agent Runtime
 
 # Reusable coding-agent runtime with a PROVIDER FALLBACK CHAIN
-# (issue #11 fix): GitHub Models → OpenRouter → Google Gemini.
+# (issue #11 fix), reordered so the most reliable provider is primary:
+#   Google Gemini → OpenRouter → GitHub Models (last resort).
+# GitHub Models was demoted after repeated "connection error / overloaded"
+# outages (issues #11); it remains as the always-available final fallback.
 #
 # - Default provider (GitHub Models) always works: built-in GITHUB_TOKEN,
 #   `models: read` permission, no secrets needed.
