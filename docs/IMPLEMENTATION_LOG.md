@@ -327,6 +327,44 @@ always verify *outcomes*, not exit codes.
 
 ---
 
+## Issue 10 — Aider committed its own `.aider*` logs instead of code (and the retry check was fooled)
+
+**Where:** repo run, agent-runtime (implement), PR Files-changed review
+
+**What we saw** — the PR diff contained `.aider.chat.history.md`,
+`.aider.input.history`, `.aider.tags.cache.v4/cache.db` — and **zero code
+changes**. The chat history showed `Empty response received from LLM`.
+
+**Root causes — three, all mine:**
+
+1. **`--no-gitignore` backfired.** Added in issue #9's fix to stop
+   `.gitignore` churn, it actually disabled aider's *built-in* protection
+   that gitignores its own `.aider*` files. Untracked caches then got swept
+   into `git add -A`.
+2. **The retry check counted junk as success.** `has_changes()` excluded
+   only `.gitignore`, so the `.aider*` files looked like "agent produced
+   changes" — the loop never retried the empty response.
+3. **The double-prefix model id was still wrong.**
+   `openai/openai/gpt-4.1-mini` (my issue-9 guess) still returned empty —
+   see the chat history in the PR diff.
+
+**Fixes**
+- Removed `--no-gitignore`; added `--no-stream` (another known cause of
+  empty responses through proxies).
+- `has_changes()` now excludes `.gitignore` AND `.aider*`; a defensive
+  `git rm --cached .aider*` runs before commit.
+- Switched the model route to litellm's **native** GitHub Models provider:
+  `AIDER_MODEL = github/<vendor>/<model>` (e.g.
+  `github/openai/gpt-4.1-mini`), with `GITHUB_TOKEN` exported for litellm —
+  documented path instead of the OpenAI-prefix guesswork.
+
+**Lesson** — read the artifacts your agent leaves behind (chat history,
+ caches) before trusting a green run: this failure was fully diagnosed from
+ the committed `.aider.chat.history.md`. And a retry-guard must exclude the
+ *tool's own* byproducts, or it will mistake noise for work.
+
+---
+
 ## Timeline summary
 
 | # | Symptom | Class of bug | Permanent fix |
@@ -340,6 +378,7 @@ always verify *outcomes*, not exit codes.
 | 7 | Command run "Skipped", no feedback | silent rejection | `guidance` hint job |
 | 8 | Actions can't create the PR (GraphQL error) | repo settings layer | enable "Allow GitHub Actions to create and approve pull requests"; force-push for re-run safety |
 | 9 | Empty LLM response (0 tokens) + non-fast-forward push | double-namespaced model id; stale YAML on re-run | `AIDER_MODEL=openai/<vendor>/<model>`; 3-attempt retry + outcome check; push fixes before re-running |
+| 10 | PR contained aider's own logs, no code; retries fooled | `--no-gitignore` disabled aider's self-ignore; retry check counted junk; prefix guess wrong | drop flag, exclude `.aider*` in check + scrub before commit; litellm `github/` provider route |
 
 ---
 

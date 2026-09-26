@@ -53,13 +53,16 @@ jobs:
     env:
       OPENAI_API_BASE: https://models.github.ai/inference
       OPENAI_API_KEY: ${{ secrets.GITHUB_TOKEN }}
+      # litellm's native GitHub Models provider (aider prefix `github/`)
+      # reads GITHUB_TOKEN itself and targets models.github.ai correctly.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MODEL_ID: ${{ inputs.model }}
-      # aider needs its `openai/` client prefix PLUS GitHub Models' own
-      # `vendor/model` id: e.g. input openai/gpt-4.1-mini ->
-      # openai/openai/gpt-4.1-mini. Passing only `openai/<model>` made the
-      # endpoint return empty responses (0 tokens received).
-      AIDER_MODEL: openai/${{ inputs.model }}
+      # aider passes unknown prefixes to litellm: `github/<vendor>/<model>`
+      # is litellm's documented GitHub Models route. (Earlier attempts:
+      # `openai/<model>` and `openai/openai/<model>` both returned empty
+      # responses from the endpoint.)
+      AIDER_MODEL: github/${{ inputs.model }}
 
     steps:
       - name: Check out code
@@ -98,10 +101,10 @@ jobs:
           git checkout -b "${BRANCH}"
 
           # Retry up to 3 attempts: free-tier models occasionally return
-          # empty responses. Retry only if the working tree has no real
-          # changes (ignoring aider's .gitignore churn).
+          # empty responses. A change only counts if it is NOT aider's own
+          # housekeeping files (.gitignore, .aider* caches/history).
           has_changes() {
-            git status --porcelain | grep -v -E '\.gitignore$' | grep -q .
+            git status --porcelain | grep -v -E '(\.gitignore$|\.aider)' | grep -q .
           }
 
           for ATTEMPT in 1 2 3; do
@@ -115,20 +118,21 @@ jobs:
           tests/ must keep passing (npm test); do not add dependencies." \
               --yes-always \
               --no-auto-commits \
-              --no-gitignore \
+              --no-stream \
               --no-show-model-warnings \
               --no-check-update || true
             if has_changes; then
               echo "Attempt ${ATTEMPT}: agent produced changes."
               break
             fi
-            echo "Attempt ${ATTEMPT}: no changes (empty model response?) — retrying..."
+            echo "Attempt ${ATTEMPT}: no real changes (empty model response?) — retrying..."
             [ "${ATTEMPT}" = "3" ] && { echo "::error::Agent produced no changes after 3 attempts."; exit 1; }
           done
 
           git add -A
+          git status --porcelain | grep -E '^A.*\.aider' && echo "::warning::aider housekeeping files detected — removing" && git rm --cached -q .aider* 2>/dev/null || true
           git commit -m "feat: implement issue #${{ inputs.issue_number }} (developer agent)" \
-            || { echo "::error::Agent produced no changes."; exit 1; }
+            || { echo "::error::Agent produced no changes."; exit 1 }
           # Force-push: agent branches are ephemeral; this makes re-runs after a
           # partial failure (e.g. PR creation blocked) idempotent.
           git push --force origin "${BRANCH}"
@@ -163,7 +167,7 @@ jobs:
           git checkout "${BRANCH}"
 
           has_changes() {
-            git status --porcelain | grep -v -E '\.gitignore$' | grep -q .
+            git status --porcelain | grep -v -E '(\.gitignore$|\.aider)' | grep -q .
           }
 
           for ATTEMPT in 1 2 3; do
@@ -176,7 +180,7 @@ jobs:
           application behavior." \
               --yes-always \
               --no-auto-commits \
-              --no-gitignore \
+              --no-stream \
               --no-show-model-warnings \
               --no-check-update || true
             if has_changes; then
@@ -188,6 +192,7 @@ jobs:
           done
 
           git add -A
+          git rm --cached -q .aider* 2>/dev/null || true
           git commit -m "test: add unit tests for PR #${{ inputs.pr_number }} (unit-test agent)" \
             || { echo "::error::Agent produced no test changes — the diff guard would reject this anyway."; exit 1; }
           git push --force origin "${BRANCH}"
