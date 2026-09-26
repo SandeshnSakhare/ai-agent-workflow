@@ -433,6 +433,44 @@ reached the job; blank = it didn't. And reusable workflows always need
 
 ---
 
+## Issue 14 — `Startup failure: workflow requesting 'contents: write' but only allowed 'contents: read'`
+
+**Where:** repo run, PR Quality Gate on PR #16 (after "Approve and run")
+
+**What we saw**
+```
+Invalid workflow file: pr-quality-gate.yml#L119
+Error calling workflow '.../agent-runtime.yml@3536f...'.
+The workflow is requesting 'contents: write', but is only allowed 'contents: read'.
+```
+
+**Root cause** — reusable-workflow permission containment: a called
+workflow's requested permissions must fit inside what the *caller job*
+grants. `agent-runtime.yml` declares `contents: write` (needed for
+implement/test push), but the `review-agent` call site in
+`pr-quality-gate.yml` granted only `contents: read`. GitHub validates the
+request statically — regardless of what review mode actually uses — and
+fails the whole call at startup. The approval-handler call sites granted
+`contents: write`, which is why `/approve`-triggered runs (implement) worked
+while PR-triggered runs (review) died before starting anything.
+
+**Fix** — raise the review-agent job grant to `contents: write` (with a
+comment explaining the static validation). Alternative (cleaner but more
+invasive): give agent-runtime's job mode-specific permissions so review
+requests only `read`. Not needed today.
+
+Also contextual: the run reached "Approve and run" because PRs opened by
+`github-actions[bot]` get first-time-contributor workflow approval (GitHub
+anti-exfiltration) — one click, needed once per bot.
+
+**Lesson** — with `workflow_call`, permissions are validated pairwise at
+every call site, statically, against the callee's *declaration* — not its
+actual usage for that invocation. Every new call site must re-grant the
+full permission set the callee declares. And `secrets: inherit` does NOT
+carry permissions; they are separate grants.
+
+---
+
 ## Timeline summary
 
 | # | Symptom | Class of bug | Permanent fix |
@@ -450,6 +488,7 @@ reached the job; blank = it didn't. And reusable workflows always need
 | 11 | Connection errors from the models endpoint on every attempt | provider-side outage/overload (not our code) | smoke-test canary + 3-provider fallback chain, secret-gated |
 | 12 | GitHub Models failed 4 runs in a row despite 200-probes | free-tier instability; probes pass but real calls fail | **reordered chain: Gemini primary** (verified working), OpenRouter second, GitHub Models demoted to last resort; also fixed retired `gemini-2.0-flash` → `gemini-3.8-flash` (Google 404) |
 | 13 | Keys blank in agent job despite being added correctly | reusable workflows don't inherit caller secrets | `secrets: inherit` at every `uses:` call site |
+| 14 | Review-stage startup failure: permission containment | caller job granted `contents: read` < callee's declared `contents: write` | grant `contents: write` at the review-agent call site (static validation, mode-agnostic) |
 
 ---
 
