@@ -1,0 +1,44 @@
+
+# 2026-09-26 21:41:36.255334
++Implement this GitHub issue.
++Title: add calculator add square functionality
++Body: ### Task
++
++in calculator add square functionality so that with existing calculaotr add square functionlity and dont break the existing code
++
++
++
++### Acceptance criteria
++
++handle zero and negative number
++
++### Constraints
++
++- [x] Keep changes minimal and production-quality
++- [ ] Unit tests must cover the new behavior
++- [ ] No new npm dependencies
++
++Rules: keep changes minimal and production-quality; unit tests in
++tests/ must keep passing (npm test); do not add dependencies.
+
+# 2026-09-26 21:41:36.255384
++Implement this GitHub issue.
++Title: add calculator add square functionality
++Body: ### Task
++
++in calculator add square functionality so that with existing calculaotr add square functionlity and dont break the existing code
++
++
++
++### Acceptance criteria
++
++handle zero and negative number
++
++### Constraints
++
++- [x] Keep changes minimal and production-quality
++- [ ] Unit tests must cover the new behavior
++- [ ] No new npm dependencies
++
++Rules: keep changes minimal and production-quality; unit tests in
++tests/ must keep passing (npm test); do not add dependencies.
