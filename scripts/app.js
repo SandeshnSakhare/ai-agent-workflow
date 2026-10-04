@@ -51,4 +51,34 @@ function percentage(part, total) {
   return Math.round((part / total) * 10000) / 100;
 }
 
-module.exports = { add, subtract, multiply, divide, square, average, percentage };
+/** Execute a binary or unary operation safely. */
+function calculate(a, op, b) {
+  const numA = Number(a);
+  if (Number.isNaN(numA)) {
+    throw new Error('Invalid number');
+  }
+
+  if (op === '^2' || op === 'sqr') {
+    return square(numA);
+  }
+
+  const numB = Number(b);
+  if (Number.isNaN(numB)) {
+    throw new Error('Invalid number');
+  }
+
+  switch (op) {
+    case '+':
+      return add(numA, numB);
+    case '-':
+      return subtract(numA, numB);
+    case '*':
+      return multiply(numA, numB);
+    case '/':
+      return divide(numA, numB);
+    default:
+      throw new Error('Unknown operation: ' + op);
+  }
+}
+
+module.exports = { add, subtract, multiply, divide, square, average, percentage, calculate };
