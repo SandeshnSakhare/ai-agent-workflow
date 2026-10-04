@@ -7,24 +7,41 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="app">
+  <main class="app calculator">
     <h1>Calculator</h1>
     <p class="subtitle">Demo app for the GitHub-native multi-agent workflow</p>
 
-    <form id="calc-form">
-      <input id="a" type="number" step="any" placeholder="First number" required />
-      <select id="op" aria-label="Operation">
-        <option value="+">+</option>
-        <option value="-">−</option>
-        <option value="*">×</option>
-        <option value="/">÷</option>
-        <option value="^2">x²</option>
-      </select>
-      <input id="b" type="number" step="any" placeholder="Second number" required />
-      <button type="submit">=</button>
-    </form>
+    <div class="calculator-display" aria-live="polite">
+      <div id="calc-history" class="calc-history" aria-label="Expression history"></div>
+      <div id="calc-screen" class="calc-screen" aria-label="Current value">0</div>
+    </div>
 
-    <div id="result" class="result" aria-live="polite">—</div>
+    <div class="calculator-keypad" role="group" aria-label="Calculator keypad">
+      <button type="button" class="btn btn-action" data-action="clear" aria-label="Clear">C</button>
+      <button type="button" class="btn btn-action" data-action="backspace" aria-label="Backspace">⌫</button>
+      <button type="button" class="btn btn-action" data-action="negate" aria-label="Plus or minus">±</button>
+      <button type="button" class="btn btn-operator" data-action="op" data-op="/" aria-label="Divide">÷</button>
+
+      <button type="button" class="btn btn-num" data-num="7">7</button>
+      <button type="button" class="btn btn-num" data-num="8">8</button>
+      <button type="button" class="btn btn-num" data-num="9">9</button>
+      <button type="button" class="btn btn-operator" data-action="op" data-op="*" aria-label="Multiply">×</button>
+
+      <button type="button" class="btn btn-num" data-num="4">4</button>
+      <button type="button" class="btn btn-num" data-num="5">5</button>
+      <button type="button" class="btn btn-num" data-num="6">6</button>
+      <button type="button" class="btn btn-operator" data-action="op" data-op="-" aria-label="Subtract">−</button>
+
+      <button type="button" class="btn btn-num" data-num="1">1</button>
+      <button type="button" class="btn btn-num" data-num="2">2</button>
+      <button type="button" class="btn btn-num" data-num="3">3</button>
+      <button type="button" class="btn btn-operator" data-action="op" data-op="+" aria-label="Add">+</button>
+
+      <button type="button" class="btn btn-num" data-num="0">0</button>
+      <button type="button" class="btn btn-num" data-action="decimal">.</button>
+      <button type="button" class="btn btn-action" data-action="square" aria-label="Square">x²</button>
+      <button type="button" class="btn btn-equals" data-action="equals" aria-label="Equals">=</button>
+    </div>
   </main>
 
   <script src="app.js"></script>
